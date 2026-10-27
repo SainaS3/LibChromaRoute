@@ -1,0 +1,8 @@
+# Build trees (all presets build under out/)
+/out/
+/build/
+
+# IDE state
+/.vs/
+*.user
+CMakeUserPresets.json

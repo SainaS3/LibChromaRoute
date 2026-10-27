@@ -1,0 +1,85 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 4, "minor": 2, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "msvc-base",
+      "hidden": true,
+      "generator": "Visual Studio 18 2026",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "msvc-uwp-x64-base",
+      "hidden": true,
+      "inherits": "msvc-base",
+      "description": "Universal Windows Platform (WindowsStore) x64, MSVC, latest installed Windows 10/11 SDK.",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "WindowsStore",
+        "CMAKE_SYSTEM_VERSION": "10.0",
+        "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY"
+      }
+    },
+    {
+      "name": "msvc-uwp-x64-debug",
+      "displayName": "UWP x64 Debug (MSVC)",
+      "inherits": "msvc-uwp-x64-base",
+      "cacheVariables": { "CMAKE_CONFIGURATION_TYPES": "Debug" }
+    },
+    {
+      "name": "msvc-uwp-x64-release",
+      "displayName": "UWP x64 Release (MSVC)",
+      "inherits": "msvc-uwp-x64-base",
+      "cacheVariables": { "CMAKE_CONFIGURATION_TYPES": "Release" }
+    },
+    {
+      "name": "msvc-host-x64-debug",
+      "displayName": "Host Win32 x64 Debug (development only, not a deliverable)",
+      "inherits": "msvc-base",
+      "cacheVariables": { "CMAKE_CONFIGURATION_TYPES": "Debug" }
+    },
+    {
+      "name": "msvc-host-x64-release",
+      "displayName": "Host Win32 x64 Release (development only, not a deliverable)",
+      "inherits": "msvc-base",
+      "cacheVariables": { "CMAKE_CONFIGURATION_TYPES": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "msvc-uwp-x64-debug", "configurePreset": "msvc-uwp-x64-debug", "configuration": "Debug" },
+    { "name": "msvc-uwp-x64-release", "configurePreset": "msvc-uwp-x64-release", "configuration": "Release" },
+    { "name": "msvc-host-x64-debug", "configurePreset": "msvc-host-x64-debug", "configuration": "Debug" },
+    { "name": "msvc-host-x64-release", "configurePreset": "msvc-host-x64-release", "configuration": "Release" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true, "verbosity": "verbose" },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "msvc-uwp-x64-debug", "inherits": "test-base", "configurePreset": "msvc-uwp-x64-debug", "configuration": "Debug" },
+    { "name": "msvc-uwp-x64-release", "inherits": "test-base", "configurePreset": "msvc-uwp-x64-release", "configuration": "Release" },
+    { "name": "msvc-host-x64-debug", "inherits": "test-base", "configurePreset": "msvc-host-x64-debug", "configuration": "Debug" },
+    { "name": "msvc-host-x64-release", "inherits": "test-base", "configurePreset": "msvc-host-x64-release", "configuration": "Release" }
+  ],
+  "workflowPresets": [
+    {
+      "name": "msvc-uwp-x64-debug",
+      "steps": [
+        { "type": "configure", "name": "msvc-uwp-x64-debug" },
+        { "type": "build", "name": "msvc-uwp-x64-debug" },
+        { "type": "test", "name": "msvc-uwp-x64-debug" }
+      ]
+    },
+    {
+      "name": "msvc-uwp-x64-release",
+      "steps": [
+        { "type": "configure", "name": "msvc-uwp-x64-release" },
+        { "type": "build", "name": "msvc-uwp-x64-release" },
+        { "type": "test", "name": "msvc-uwp-x64-release" }
+      ]
+    }
+  ]
+}

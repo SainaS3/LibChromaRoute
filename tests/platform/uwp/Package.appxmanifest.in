@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Console-subsystem UWP test app. The execution alias lets a script launch the
+  packaged app and wait for its exit code. No capabilities are declared, so the
+  tests run in the most restrictive AppContainer.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:iot2="http://schemas.microsoft.com/appx/manifest/iot/windows10/2"
+  IgnorableNamespaces="mp uap uap5 desktop4 iot2">
+  <Identity Name="@CHROMAROUTE_UWP_PACKAGE_NAME@" Publisher="CN=LibChromaRoute Test" Version="@CHROMAROUTE_UWP_PACKAGE_VERSION@" ProcessorArchitecture="x64"/>
+  <!-- Required by the Windows Store project build; the value is unused. -->
+  <mp:PhoneIdentity PhoneProductId="6f0b3c1e-5d6a-4b8e-9a51-2f4c0b7d9e10" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
+  <Properties>
+    <DisplayName>LibChromaRoute UWP tests</DisplayName>
+    <PublisherDisplayName>LibChromaRoute</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="@CHROMAROUTE_UWP_MIN_VERSION@" MaxVersionTested="@CHROMAROUTE_UWP_MAX_VERSION_TESTED@"/>
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us"/>
+  </Resources>
+  <Applications>
+    <Application Id="App" Executable="@CHROMAROUTE_UWP_EXECUTABLE@" EntryPoint="ChromaRouteUwpTests.App"
+                 desktop4:Subsystem="console" desktop4:SupportsMultipleInstances="true"
+                 iot2:Subsystem="console" iot2:SupportsMultipleInstances="true">
+      <uap:VisualElements DisplayName="LibChromaRoute UWP tests" Description="LibChromaRoute UWP runtime tests"
+                          BackgroundColor="transparent" AppListEntry="none"
+                          Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png"/>
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias" Executable="@CHROMAROUTE_UWP_EXECUTABLE@" EntryPoint="ChromaRouteUwpTests.App">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console" iot2:Subsystem="console">
+            <uap5:ExecutionAlias Alias="@CHROMAROUTE_UWP_ALIAS@"/>
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
