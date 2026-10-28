@@ -1,9 +1,9 @@
 // Model conversions (gray <-> RGB, alpha add/drop) and TRCs across types,
-// against the oracle (tests/data/pixel_format_oracle_data.h).
+// against the oracle (tests/data/pixel_format_oracle_data.hpp).
 
 #include "support/test_harness.hpp"
 
-#include "data/pixel_format_oracle_data.h"
+#include "data/pixel_format_oracle_data.hpp"
 
 #include <chromaroute/chromaroute.hpp>
 
@@ -17,6 +17,8 @@
 
 using chromaroute::Converter;
 using chromaroute::PixelFormat;
+
+namespace oracle = chromaroute::test::oracle;
 
 namespace {
 
@@ -68,10 +70,10 @@ CR_TEST(gray_float_replicates_bit_exactly)
 
 CR_TEST(rgb_u8_to_gray_u8_matches_oracle_luminance)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_gray_u8_inputs);
+    constexpr std::size_t cases = std::size(oracle::gray_u8_inputs);
     std::vector<std::uint8_t> rgb(cases * 3);
     for (std::size_t i = 0; i < cases; ++i) {
-        const std::uint32_t packed = chromaroute_oracle_gray_u8_inputs[i];
+        const std::uint32_t packed = oracle::gray_u8_inputs[i];
         rgb[i * 3 + 0] = static_cast<std::uint8_t>(packed);
         rgb[i * 3 + 1] = static_cast<std::uint8_t>(packed >> 8);
         rgb[i * 3 + 2] = static_cast<std::uint8_t>(packed >> 16);
@@ -79,22 +81,22 @@ CR_TEST(rgb_u8_to_gray_u8_matches_oracle_luminance)
     const auto gray = convert<std::uint8_t>("R'G'B' u8", "Y' u8", rgb);
     int mismatches = 0;
     for (std::size_t i = 0; i < cases; ++i) {
-        mismatches += gray[i] != chromaroute_oracle_gray_u8_expected[i];
+        mismatches += gray[i] != oracle::gray_u8_expected[i];
     }
     CR_CHECK(mismatches == 0);
 }
 
 CR_TEST(rgb_float_to_gray_float_matches_exact_weighted_sum)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_gray_f32_expected);
+    constexpr std::size_t cases = std::size(oracle::gray_f32_expected);
     std::vector<float> rgb(cases * 3);
     for (std::size_t i = 0; i < cases * 3; ++i) {
-        rgb[i] = std::bit_cast<float>(chromaroute_oracle_gray_f32_inputs[i]);
+        rgb[i] = std::bit_cast<float>(oracle::gray_f32_inputs[i]);
     }
     const auto gray = convert<float>("RGB float", "Y float", rgb);
     int mismatches = 0;
     for (std::size_t i = 0; i < cases; ++i) {
-        mismatches += std::bit_cast<std::uint32_t>(gray[i]) != chromaroute_oracle_gray_f32_expected[i];
+        mismatches += std::bit_cast<std::uint32_t>(gray[i]) != oracle::gray_f32_expected[i];
     }
     CR_CHECK(mismatches == 0);
 }
@@ -117,31 +119,31 @@ CR_TEST(alpha_is_added_as_one_and_dropped_without_touching_color)
 
 CR_TEST(u16_decode_matches_oracle)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_u16_decode_inputs);
+    constexpr std::size_t cases = std::size(oracle::u16_decode_inputs);
     std::vector<std::uint16_t> rgb(cases * 3);
     for (std::size_t i = 0; i < cases; ++i) {
-        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = chromaroute_oracle_u16_decode_inputs[i];
+        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = oracle::u16_decode_inputs[i];
     }
     const auto linear = convert<float>("R'G'B' u16", "RGB float", rgb);
     int mismatches = 0;
     for (std::size_t i = 0; i < cases * 3; ++i) {
-        mismatches += std::bit_cast<std::uint32_t>(linear[i]) != chromaroute_oracle_u16_decode_f32[i / 3];
+        mismatches += std::bit_cast<std::uint32_t>(linear[i]) != oracle::u16_decode_f32[i / 3];
     }
     CR_CHECK(mismatches == 0);
 }
 
 CR_TEST(u16_encode_is_exact_at_sampled_thresholds)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_u16_encode_levels);
+    constexpr std::size_t cases = std::size(oracle::u16_encode_levels);
     std::vector<float> linear;
     for (std::size_t i = 0; i < cases; ++i) {
-        const float at = std::bit_cast<float>(chromaroute_oracle_u16_encode_threshold[i]);
+        const float at = std::bit_cast<float>(oracle::u16_encode_threshold[i]);
         linear.insert(linear.end(), {at, at, at, std::nextafter(at, 0.0f), std::nextafter(at, 0.0f), std::nextafter(at, 0.0f)});
     }
     const auto encoded = convert<std::uint16_t>("RGB float", "R'G'B' u16", linear);
     int mismatches = 0;
     for (std::size_t i = 0; i < cases; ++i) {
-        const int k = chromaroute_oracle_u16_encode_levels[i];
+        const int k = oracle::u16_encode_levels[i];
         for (int c = 0; c < 3; ++c) {
             mismatches += encoded[i * 6 + c] != k + 1;
             mismatches += encoded[i * 6 + 3 + c] != k;

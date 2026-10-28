@@ -3,10 +3,11 @@
 // oracle thresholds, for the color channels (sRGB OETF) and for alpha.
 // About 1.07e9 values per channel kind; host Release only (docs/testing.md).
 
-#include "data/srgb_oracle_data.h"
+#include "data/srgb_oracle_data.hpp"
 
 #include <chromaroute/chromaroute.hpp>
 
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cstdint>
@@ -16,6 +17,8 @@
 using chromaroute::Converter;
 using chromaroute::PixelFormat;
 
+namespace oracle = chromaroute::test::oracle;
+
 namespace {
 
 constexpr std::uint32_t last_bits = 0x3F800000u; // 1.0f; all non-negative floats up to it, in order
@@ -24,7 +27,7 @@ constexpr std::size_t batch_pixels = 1u << 20;
 // Counts thresholds at or below the given bit pattern; values only increase,
 // so the position only moves forward.
 struct ThresholdWalker {
-    const std::uint32_t* thresholds;
+    const std::array<std::uint32_t, 255>& thresholds;
     int passed = 0;
     int expected(std::uint32_t bits)
     {
@@ -38,8 +41,8 @@ struct ThresholdWalker {
 // lane 0..2: the value goes into that color channel; lane 3: into alpha.
 long long run(const Converter& encode, bool color)
 {
-    ThresholdWalker walker{color ? chromaroute_oracle_linear_f32_to_srgb_u8_threshold
-                                 : chromaroute_oracle_f32_to_u8_threshold};
+    ThresholdWalker walker{color ? oracle::linear_f32_to_srgb_u8_threshold
+                                 : oracle::f32_to_u8_threshold};
     const std::size_t per_pixel = color ? 3 : 1;
     std::vector<float> rgba(batch_pixels * 4);
     std::vector<std::uint8_t> out(batch_pixels * 4);

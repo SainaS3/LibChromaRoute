@@ -1,9 +1,9 @@
 // Associated alpha, gamma TRC thresholds and conversions across spaces,
-// against the oracle (tests/data/color_semantics_oracle_data.h).
+// against the oracle (tests/data/color_semantics_oracle_data.hpp).
 
 #include "support/test_harness.hpp"
 
-#include "data/color_semantics_oracle_data.h"
+#include "data/color_semantics_oracle_data.hpp"
 #include "engine/numeric.hpp"
 #include "engine/transfer.hpp"
 
@@ -13,11 +13,14 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
 using chromaroute::Converter;
 using chromaroute::PixelFormat;
+
+namespace oracle = chromaroute::test::oracle;
 
 namespace {
 
@@ -33,10 +36,10 @@ std::vector<To> convert(const char* from, const char* to, const std::vector<From
     return output;
 }
 
-std::vector<std::uint8_t> unpackRgb(const std::uint32_t* packed, std::size_t count)
+std::vector<std::uint8_t> unpackRgb(std::span<const std::uint32_t> packed)
 {
-    std::vector<std::uint8_t> rgb(count * 3);
-    for (std::size_t i = 0; i < count; ++i) {
+    std::vector<std::uint8_t> rgb(packed.size() * 3);
+    for (std::size_t i = 0; i < packed.size(); ++i) {
         rgb[i * 3 + 0] = static_cast<std::uint8_t>(packed[i]);
         rgb[i * 3 + 1] = static_cast<std::uint8_t>(packed[i] >> 8);
         rgb[i * 3 + 2] = static_cast<std::uint8_t>(packed[i] >> 16);
@@ -83,11 +86,11 @@ CR_TEST(associate_scales_color_by_used_alpha_and_keeps_alpha)
 
 CR_TEST(associated_u8_decode_matches_oracle)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_associated_u8_inputs);
+    constexpr std::size_t cases = std::size(oracle::associated_u8_inputs);
     std::vector<std::uint8_t> pixels(cases * 4);
     for (std::size_t i = 0; i < cases; ++i) {
-        const auto v = static_cast<std::uint8_t>(chromaroute_oracle_associated_u8_inputs[i]);
-        const auto a = static_cast<std::uint8_t>(chromaroute_oracle_associated_u8_inputs[i] >> 8);
+        const auto v = static_cast<std::uint8_t>(oracle::associated_u8_inputs[i]);
+        const auto a = static_cast<std::uint8_t>(oracle::associated_u8_inputs[i] >> 8);
         pixels[i * 4 + 0] = pixels[i * 4 + 1] = pixels[i * 4 + 2] = v;
         pixels[i * 4 + 3] = a;
     }
@@ -95,11 +98,11 @@ CR_TEST(associated_u8_decode_matches_oracle)
     int mismatches = 0;
     for (std::size_t i = 0; i < cases; ++i) {
         for (int c = 0; c < 3; ++c) {
-            const bool bad = std::bit_cast<std::uint32_t>(linear[i * 4 + c]) != chromaroute_oracle_associated_u8_expected[i];
+            const bool bad = std::bit_cast<std::uint32_t>(linear[i * 4 + c]) != oracle::associated_u8_expected[i];
             if (bad && ++mismatches <= 5 && c == 0) {
                 std::fprintf(cr_context.out(), "  v=%u a=%u: got %a expected %a\n", pixels[i * 4], pixels[i * 4 + 3],
                              static_cast<double>(linear[i * 4]),
-                             static_cast<double>(std::bit_cast<float>(chromaroute_oracle_associated_u8_expected[i])));
+                             static_cast<double>(std::bit_cast<float>(oracle::associated_u8_expected[i])));
             }
         }
     }
@@ -190,7 +193,7 @@ CR_TEST(gamma22_encode_exact_at_every_threshold)
 {
     std::vector<float> rgb;
     for (int k = 0; k < 255; ++k) {
-        const float at = std::bit_cast<float>(chromaroute_oracle_gamma22_u8_threshold[k]);
+        const float at = std::bit_cast<float>(oracle::gamma22_u8_threshold[k]);
         const float below = std::nextafter(at, 0.0f);
         rgb.insert(rgb.end(), {at, below, at});
     }
@@ -205,39 +208,39 @@ CR_TEST(gamma22_encode_exact_at_every_threshold)
 
 CR_TEST(srgb_to_rec2020_linear_float_matches_exact_matrix)
 {
-    constexpr std::size_t values = std::size(chromaroute_oracle_srgb_to_rec2020_f32_inputs);
+    constexpr std::size_t values = std::size(oracle::srgb_to_rec2020_f32_inputs);
     std::vector<float> rgb(values);
     for (std::size_t i = 0; i < values; ++i) {
-        rgb[i] = std::bit_cast<float>(chromaroute_oracle_srgb_to_rec2020_f32_inputs[i]);
+        rgb[i] = std::bit_cast<float>(oracle::srgb_to_rec2020_f32_inputs[i]);
     }
     const auto rec = convert<float>("RGB float", "RGB float-Rec2020", rgb);
     int mismatches = 0;
     for (std::size_t i = 0; i < values; ++i) {
-        mismatches += std::bit_cast<std::uint32_t>(rec[i]) != chromaroute_oracle_srgb_to_rec2020_f32_expected[i];
+        mismatches += std::bit_cast<std::uint32_t>(rec[i]) != oracle::srgb_to_rec2020_f32_expected[i];
     }
     CR_CHECK(mismatches == 0);
 }
 
 CR_TEST(srgb_to_rec2020_encoded_u8_matches_oracle)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_srgb_to_rec2020_u8_inputs);
+    constexpr std::size_t cases = std::size(oracle::srgb_to_rec2020_u8_inputs);
     const auto rec = convert<std::uint8_t>("R'G'B' u8", "R'G'B' u8-Rec2020",
-                                           unpackRgb(chromaroute_oracle_srgb_to_rec2020_u8_inputs, cases));
+                                           unpackRgb(oracle::srgb_to_rec2020_u8_inputs));
     int mismatches = 0;
     for (std::size_t i = 0; i < cases * 3; ++i) {
-        mismatches += rec[i] != chromaroute_oracle_srgb_to_rec2020_u8_expected[i];
+        mismatches += rec[i] != oracle::srgb_to_rec2020_u8_expected[i];
     }
     CR_CHECK(mismatches == 0);
 }
 
 CR_TEST(gray_in_rec2020_uses_rec2020_luminance)
 {
-    constexpr std::size_t cases = std::size(chromaroute_oracle_rec2020_gray_u8_inputs);
+    constexpr std::size_t cases = std::size(oracle::rec2020_gray_u8_inputs);
     const auto gray = convert<std::uint8_t>("R'G'B' u8-Rec2020", "Y' u8-Rec2020",
-                                            unpackRgb(chromaroute_oracle_rec2020_gray_u8_inputs, cases));
+                                            unpackRgb(oracle::rec2020_gray_u8_inputs));
     int mismatches = 0;
     for (std::size_t i = 0; i < cases; ++i) {
-        mismatches += gray[i] != chromaroute_oracle_rec2020_gray_u8_expected[i];
+        mismatches += gray[i] != oracle::rec2020_gray_u8_expected[i];
     }
     CR_CHECK(mismatches == 0);
 }

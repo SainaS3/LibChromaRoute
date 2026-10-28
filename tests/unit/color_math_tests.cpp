@@ -3,7 +3,7 @@
 #include "support/test_harness.hpp"
 
 #include "core/descriptors.hpp"
-#include "data/pixel_format_oracle_data.h"
+#include "data/pixel_format_oracle_data.hpp"
 #include "engine/color_math.hpp"
 
 #include <bit>
@@ -11,6 +11,8 @@
 #include <cstdint>
 
 using namespace chromaroute::detail;
+
+namespace oracle = chromaroute::test::oracle;
 
 namespace {
 
@@ -35,7 +37,7 @@ CR_TEST(srgb_matrix_matches_exact_derivation)
     std::int64_t worst = 0;
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
-            const std::int64_t d = ulpDistance(m[r][c], chromaroute_oracle_srgb_to_xyz_d50[r * 3 + c]);
+            const std::int64_t d = ulpDistance(m[r][c], oracle::srgb_to_xyz_d50[r * 3 + c]);
             worst = d > worst ? d : worst;
         }
     }

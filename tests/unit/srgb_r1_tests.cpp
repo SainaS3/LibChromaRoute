@@ -1,10 +1,10 @@
 // R1: "R'G'B'A u8" <-> "RGBA float" against the independent high-precision
-// oracle (tests/data/srgb_oracle_data.h). Integer outputs and correctly
+// oracle (tests/data/srgb_oracle_data.hpp). Integer outputs and correctly
 // rounded float outputs must match exactly.
 
 #include "support/test_harness.hpp"
 
-#include "data/srgb_oracle_data.h"
+#include "data/srgb_oracle_data.hpp"
 
 #include <chromaroute/chromaroute.hpp>
 
@@ -19,6 +19,8 @@
 
 using chromaroute::Converter;
 using chromaroute::PixelFormat;
+
+namespace oracle = chromaroute::test::oracle;
 
 namespace {
 
@@ -44,13 +46,13 @@ std::vector<std::uint8_t> encode(const std::vector<float>& rgba)
 }
 
 // Exact expected u8 for a float, by counting thresholds at or below it.
-int expectedFromThresholds(const std::uint32_t* thresholds, float x)
+int expectedFromThresholds(const std::array<std::uint32_t, 255>& thresholds, float x)
 {
     if (!(x > 0.0f)) {
         return 0;
     }
-    const auto* end = thresholds + 255;
-    return static_cast<int>(std::upper_bound(thresholds, end, std::bit_cast<std::uint32_t>(x)) - thresholds);
+    const auto at = std::upper_bound(thresholds.begin(), thresholds.end(), std::bit_cast<std::uint32_t>(x));
+    return static_cast<int>(at - thresholds.begin());
 }
 
 } // namespace
@@ -72,7 +74,7 @@ CR_TEST(r1_decode_all_u8_values_match_oracle)
     for (int i = 0; i < 256 * 4; ++i) {
         const bool alpha = i % 4 == 3;
         const std::uint32_t expected =
-            alpha ? chromaroute_oracle_u8_to_f32[source[i]] : chromaroute_oracle_srgb_u8_to_linear_f32[source[i]];
+            alpha ? oracle::u8_to_f32[source[i]] : oracle::srgb_u8_to_linear_f32[source[i]];
         mismatches += std::bit_cast<std::uint32_t>(out[i]) != expected;
     }
     CR_CHECK(mismatches == 0);
@@ -84,8 +86,8 @@ CR_TEST(r1_encode_is_exact_on_both_sides_of_every_threshold)
     std::vector<float> rgba;
     std::vector<int> expected_color, expected_alpha;
     for (int k = 0; k < 255; ++k) {
-        const float color_at = std::bit_cast<float>(chromaroute_oracle_linear_f32_to_srgb_u8_threshold[k]);
-        const float alpha_at = std::bit_cast<float>(chromaroute_oracle_f32_to_u8_threshold[k]);
+        const float color_at = std::bit_cast<float>(oracle::linear_f32_to_srgb_u8_threshold[k]);
+        const float alpha_at = std::bit_cast<float>(oracle::f32_to_u8_threshold[k]);
         for (int side = 0; side < 2; ++side) {
             const float c = side == 0 ? color_at : std::nextafter(color_at, 0.0f);
             const float a = side == 0 ? alpha_at : std::nextafter(alpha_at, 0.0f);
@@ -117,8 +119,8 @@ CR_TEST(r1_encode_dense_sweep_matches_threshold_model)
     int color_mismatches = 0, alpha_mismatches = 0;
     for (int i = 0; i < samples; ++i) {
         const float x = rgba[i * 4];
-        color_mismatches += out[i * 4] != expectedFromThresholds(chromaroute_oracle_linear_f32_to_srgb_u8_threshold, x);
-        alpha_mismatches += out[i * 4 + 3] != expectedFromThresholds(chromaroute_oracle_f32_to_u8_threshold, x);
+        color_mismatches += out[i * 4] != expectedFromThresholds(oracle::linear_f32_to_srgb_u8_threshold, x);
+        alpha_mismatches += out[i * 4 + 3] != expectedFromThresholds(oracle::f32_to_u8_threshold, x);
     }
     CR_CHECK(color_mismatches == 0);
     CR_CHECK(alpha_mismatches == 0);

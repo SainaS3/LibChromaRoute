@@ -2,7 +2,7 @@
 
 #include "support/test_harness.hpp"
 
-#include "data/color_semantics_oracle_data.h"
+#include "data/color_semantics_oracle_data.hpp"
 #include "engine/transfer.hpp"
 
 #include <chromaroute/chromaroute.hpp>
@@ -14,6 +14,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using chromaroute::ColorSpace;
@@ -21,9 +22,11 @@ using chromaroute::ErrorCode;
 using chromaroute::PixelFormat;
 using chromaroute::TransferFunction;
 
+namespace oracle = chromaroute::test::oracle;
+
 namespace {
 
-ColorSpace space(const char* name)
+ColorSpace space(std::string_view name)
 {
     return *ColorSpace::fromName(name);
 }
@@ -95,15 +98,15 @@ CR_TEST(gamma_curves_clamp_non_positive_values_and_keep_nan)
 CR_TEST(builtin_spaces_match_exact_derivation)
 {
     double worst = 0;
-    for (std::size_t s = 0; s < std::size(chromaroute_oracle_space_names); ++s) {
-        const ColorSpace cs = space(chromaroute_oracle_space_names[s]);
+    for (std::size_t s = 0; s < std::size(oracle::space_names); ++s) {
+        const ColorSpace cs = space(oracle::space_names[s]);
         for (int r = 0; r < 3; ++r) {
             double row = 0;
             for (int c = 0; c < 3; ++c) {
-                row = std::max(row, std::fabs(chromaroute_oracle_space_rgb_to_xyz[s][r * 3 + c]));
+                row = std::max(row, std::fabs(oracle::space_rgb_to_xyz[s][r * 3 + c]));
             }
             for (int c = 0; c < 3; ++c) {
-                const double d = std::fabs(cs.rgbToXyz()[r][c] - chromaroute_oracle_space_rgb_to_xyz[s][r * 3 + c]);
+                const double d = std::fabs(cs.rgbToXyz()[r][c] - oracle::space_rgb_to_xyz[s][r * 3 + c]);
                 worst = std::max(worst, d / (row * 0x1p-52));
             }
         }
@@ -227,7 +230,7 @@ CR_TEST(perceptual_models_always_use_the_srgb_curve)
     int mismatches = 0;
     for (std::size_t i = 0; i < v.size(); ++i) {
         mismatches += std::bit_cast<std::uint32_t>(perceptual[i]) != std::bit_cast<std::uint32_t>(srgb[i]);
-        mismatches += std::bit_cast<std::uint32_t>(nonlinear[i]) != chromaroute_oracle_gamma22_u8_to_linear_f32[i / 3];
+        mismatches += std::bit_cast<std::uint32_t>(nonlinear[i]) != oracle::gamma22_u8_to_linear_f32[i / 3];
     }
     CR_CHECK(mismatches == 0);
 }

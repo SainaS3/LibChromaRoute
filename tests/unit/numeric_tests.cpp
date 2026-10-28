@@ -1,6 +1,6 @@
 #include "support/test_harness.hpp"
 
-#include "data/srgb_oracle_data.h"
+#include "data/srgb_oracle_data.hpp"
 #include "engine/numeric.hpp"
 
 #include <bit>
@@ -10,6 +10,8 @@
 #include <limits>
 
 using namespace chromaroute::detail;
+
+namespace oracle = chromaroute::test::oracle;
 
 namespace {
 
@@ -37,7 +39,7 @@ CR_TEST(encode_unorm8_specials_and_range)
 CR_TEST(encode_unorm8_is_exact_at_float_thresholds)
 {
     for (int k = 0; k < 255; ++k) {
-        const float first_above = std::bit_cast<float>(chromaroute_oracle_f32_to_u8_threshold[k]);
+        const float first_above = std::bit_cast<float>(oracle::f32_to_u8_threshold[k]);
         const float last_below = std::nextafter(first_above, 0.0f);
         const int above = encodeUnorm<std::uint8_t>(first_above);
         const int below = encodeUnorm<std::uint8_t>(last_below);
