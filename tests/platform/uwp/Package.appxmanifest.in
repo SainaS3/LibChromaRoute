@@ -12,7 +12,7 @@
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:iot2="http://schemas.microsoft.com/appx/manifest/iot/windows10/2"
   IgnorableNamespaces="mp uap uap5 desktop4 iot2">
-  <Identity Name="@CHROMAROUTE_UWP_PACKAGE_NAME@" Publisher="CN=LibChromaRoute Test" Version="@CHROMAROUTE_UWP_PACKAGE_VERSION@" ProcessorArchitecture="x64"/>
+  <Identity Name="@CHROMAROUTE_UWP_PACKAGE_NAME@" Publisher="CN=LibChromaRoute Test" Version="@CHROMAROUTE_UWP_PACKAGE_VERSION@" ProcessorArchitecture="@CHROMAROUTE_UWP_ARCHITECTURE@"/>
   <!-- Required by the Windows Store project build; the value is unused. -->
   <mp:PhoneIdentity PhoneProductId="6f0b3c1e-5d6a-4b8e-9a51-2f4c0b7d9e10" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
   <Properties>

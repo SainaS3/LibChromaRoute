@@ -48,7 +48,7 @@ chromaroute::Status status = converter->process(std::as_bytes(std::span(pixels))
 
 ## Targets
 
-1. **Windows UWP x64**, MSVC: current.
+1. **Windows UWP x64 and ARM64**, MSVC: current.
 2. iOS (device and simulator), arm64: later.
 3. Mac Catalyst: later.
 
@@ -62,12 +62,14 @@ preset uses), and Windows Developer Mode (for the UWP runtime tests).
 cmake --list-presets=all
 cmake --workflow --preset msvc-uwp-x64-debug      # configure, build, run UWP runtime tests
 cmake --workflow --preset msvc-uwp-x64-release
+cmake --workflow --preset msvc-uwp-arm64-debug    # same for ARM64 (run tests on an ARM64 host)
+cmake --workflow --preset msvc-uwp-arm64-release
 ```
 
 Individual steps: `cmake --preset msvc-uwp-x64-debug`,
 `cmake --build --preset msvc-uwp-x64-debug`, `ctest --preset msvc-uwp-x64-debug`.
 
-`msvc-host-x64-*` presets build a plain desktop test runner for fast iteration. They
+`msvc-host-x64-*` and `msvc-host-arm64-*` presets build a plain desktop test runner for fast iteration. They
 are for development only and are not a deliverable.
 
 If the checkout is on a drive without ownership metadata (exFAT), git needs

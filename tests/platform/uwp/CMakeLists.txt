@@ -7,6 +7,9 @@ set(CHROMAROUTE_UWP_EXECUTABLE "chromaroute_uwp_tests.exe")
 set(CHROMAROUTE_UWP_ALIAS "chromaroute-uwp-tests.exe")
 set(CHROMAROUTE_UWP_MIN_VERSION "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
 set(CHROMAROUTE_UWP_MAX_VERSION_TESTED "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+# The manifest names the target architecture ("x64", "arm64"); the Visual Studio
+# platform ("x64", "ARM64") gives it.
+string(TOLOWER "${CMAKE_VS_PLATFORM_NAME}" CHROMAROUTE_UWP_ARCHITECTURE)
 configure_file(Package.appxmanifest.in "${CMAKE_CURRENT_BINARY_DIR}/Package.appxmanifest" @ONLY)
 
 set(assets
@@ -34,8 +37,15 @@ target_link_options(chromaroute_uwp_tests PRIVATE "$<$<CONFIG:Debug>:/INCREMENTA
 chromaroute_add_test_runner(chromaroute_uwp_tests)
 
 find_program(CHROMAROUTE_WINDOWS_POWERSHELL NAMES powershell REQUIRED)
+# makeappx runs on the build host, so prefer the SDK's native build for it; the
+# x64 one also runs emulated on an ARM64 host.
+set(chromaroute_sdk_bin "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots;KitsRoot10]/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+set(chromaroute_sdk_host_dirs "${chromaroute_sdk_bin}/x64")
+if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "ARM64")
+  list(PREPEND chromaroute_sdk_host_dirs "${chromaroute_sdk_bin}/arm64")
+endif()
 find_program(CHROMAROUTE_MAKEAPPX NAMES makeappx
-  HINTS "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots;KitsRoot10]/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+  HINTS ${chromaroute_sdk_host_dirs}
   REGISTRY_VIEW BOTH
   REQUIRED)
 
