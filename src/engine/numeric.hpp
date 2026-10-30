@@ -58,6 +58,48 @@ template <typename UInt>
     return static_cast<UInt>(std::floor(value * static_cast<double>(max) + 0.5));
 }
 
+// Integers mapped to the value range [lo, hi] (decision A7): code c means
+// lo + c * (hi - lo) / max. For integer lo and hi, c * (hi - lo) + lo * max is
+// an exact integer in double, so the one division rounds correctly.
+template <typename UInt>
+[[nodiscard]] inline double decodeRange(UInt code, double lo, double hi) noexcept
+{
+    static_assert(std::is_unsigned_v<UInt>, "unsigned storage type expected");
+    constexpr double max = static_cast<double>(std::numeric_limits<UInt>::max());
+    return (code * (hi - lo) + lo * max) / max;
+}
+
+// NaN and values at or below lo -> 0; at or above hi -> max; otherwise round
+// half up of s / (hi - lo), like N2, where s = (value - lo) * max is evaluated
+// in double. The quotient is rounded exactly: the candidate from the double
+// division is checked against (code -+ 1/2) * (hi - lo), products of small
+// integers that double represents exactly. s itself can be rounded (a tiny
+// value minus -128, or a double with a long mantissa); for a double value that
+// rounding is the defined behavior, as the product is in encodeUnorm. For a
+// binary32 value the code is the exact round half up of the value itself:
+// tests/exhaustive/cie_lab_exhaustive.cpp checks every binary32 input.
+template <typename UInt>
+[[nodiscard]] inline UInt encodeRange(double value, double lo, double hi) noexcept
+{
+    static_assert(std::is_unsigned_v<UInt>, "unsigned storage type expected");
+    constexpr double max = static_cast<double>(std::numeric_limits<UInt>::max());
+    if (!(value > lo)) {
+        return 0;
+    }
+    if (value >= hi) {
+        return std::numeric_limits<UInt>::max();
+    }
+    const double range = hi - lo;
+    const double scaled = (value - lo) * max;
+    double code = std::floor(scaled / range + 0.5);
+    if ((code - 0.5) * range > scaled) {
+        code -= 1.0;
+    } else if ((code + 0.5) * range <= scaled) {
+        code += 1.0;
+    }
+    return static_cast<UInt>(code);
+}
+
 // double -> float with IEEE-754 round-to-nearest-even, including overflow to
 // infinity. A plain cast of an out-of-range value is undefined behavior in C++.
 #if defined(_MSC_VER)

@@ -15,27 +15,41 @@
 
 namespace chromaroute::detail {
 
+// Most components a model or format has.
+inline constexpr std::size_t max_components = 5;
+
 struct TypeDescriptor {
-    std::string_view name; // type name, e.g. "u16", "half"
-    ComponentType type;
+    std::string_view name; // type name, e.g. "u16", "half", "CIE u8 L"
+    ComponentType type;    // storage
     std::size_t size;      // bytes per component
+    // Integer storage maps code 0 to `min` and the largest code to `max`
+    // (decision A7); float storage ignores these.
+    double min = 0.0;
+    double max = 1.0;
+
+    [[nodiscard]] bool ranged() const noexcept { return min != 0.0 || max != 1.0; }
 };
 
 struct ComponentDescriptor {
-    std::string_view name; // component name, e.g. "R'a", "Y", "A"
+    std::string_view name; // component name, e.g. "R'a", "Y", "A", "CIE L"
 };
 
 struct ModelDescriptor {
-    std::string_view name; // model name, e.g. "R'aG'aB'aA", "Y~"
+    std::string_view name; // model name, e.g. "R'aG'aB'aA", "Y~", "CIE Lab alpha"
     ColorFamily family;
     Encoding encoding;
     Alpha alpha;
-    std::size_t component_count;                   // colors, then alpha
-    std::array<const ComponentDescriptor*, 4> components;
+    std::size_t color_count;     // colors come first, then alpha
+    std::size_t component_count; // colors plus alpha
+    std::array<const ComponentDescriptor*, max_components> components;
 
-    [[nodiscard]] std::size_t colorCount() const noexcept { return family == ColorFamily::rgb ? 3 : 1; }
+    [[nodiscard]] std::size_t colorCount() const noexcept { return color_count; }
     [[nodiscard]] bool hasAlpha() const noexcept { return alpha != Alpha::none; }
     [[nodiscard]] bool associated() const noexcept { return alpha == Alpha::associated; }
+    [[nodiscard]] bool rgbOrGray() const noexcept
+    {
+        return family == ColorFamily::rgb || family == ColorFamily::gray;
+    }
 };
 
 struct TrcDescriptor {
@@ -56,15 +70,49 @@ struct SpaceDescriptor {
     [[nodiscard]] const Vector3& luminance() const noexcept { return rgb_to_xyz[1]; }
 };
 
+// One stored component of a format: which model component it holds, and how.
+struct FormatComponent {
+    std::size_t model_index;
+    const TypeDescriptor* type;
+};
+
 struct FormatDescriptor {
     std::string_view name;     // "<model> <type>" in sRGB, "<model> <type>-<space>" otherwise
-    std::string_view encoding; // "<model> <type>"
+    std::string_view encoding; // the name without the space suffix
     const ModelDescriptor* model;
-    const TypeDescriptor* type; // every component shares one type
     const SpaceDescriptor* space;
+    // Stored components, in memory order. A format may store a subset of its
+    // model's components ("CIE L float"); the missing ones read as 0, alpha as 1.
+    std::size_t component_count;
+    std::array<FormatComponent, max_components> components;
+    std::size_t bytes_per_pixel;
+    // Set when the format stores every model component in model order with
+    // one type (the common case): then the whole pixel shares `type`.
+    const TypeDescriptor* uniform_type;
 
-    [[nodiscard]] std::size_t bytesPerPixel() const noexcept { return model->component_count * type->size; }
+    [[nodiscard]] std::size_t bytesPerPixel() const noexcept { return bytes_per_pixel; }
+    [[nodiscard]] bool storesAlpha() const noexcept
+    {
+        for (std::size_t i = 0; i < component_count; ++i) {
+            if (model->hasAlpha() && components[i].model_index == model->color_count) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
+
+// A format storing every model component in order, all of one type.
+[[nodiscard]] constexpr FormatDescriptor uniformFormat(std::string_view name, const ModelDescriptor& model,
+                                                       const TypeDescriptor& type,
+                                                       const SpaceDescriptor* space) noexcept
+{
+    FormatDescriptor f{name, name, &model, space, model.component_count, {}, model.component_count * type.size, &type};
+    for (std::size_t i = 0; i < model.component_count; ++i) {
+        f.components[i] = {i, &type};
+    }
+    return f;
+}
 
 // ---- lookups: exact, case-sensitive; nullptr when unknown; thread-safe ----
 

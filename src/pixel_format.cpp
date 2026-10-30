@@ -26,17 +26,17 @@ std::size_t PixelFormat::bytesPerPixel() const noexcept
 
 std::size_t PixelFormat::componentCount() const noexcept
 {
-    return descriptor_->model->component_count;
+    return descriptor_->component_count;
 }
 
 bool PixelFormat::hasAlpha() const noexcept
 {
-    return descriptor_->model->hasAlpha();
+    return descriptor_->storesAlpha();
 }
 
-ComponentType PixelFormat::componentType(std::size_t) const noexcept
+ComponentType PixelFormat::componentType(std::size_t index) const noexcept
 {
-    return descriptor_->type->type;
+    return descriptor_->components[index].type->type;
 }
 
 ColorFamily PixelFormat::colorFamily() const noexcept

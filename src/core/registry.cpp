@@ -36,16 +36,88 @@ constexpr ComponentDescriptor component_alpha{"A"};
 constexpr ModelDescriptor model(std::string_view name, ColorFamily family, Encoding encoding, Alpha alpha)
 {
     const auto& colors = color_components[static_cast<int>(encoding)][alpha == Alpha::associated ? 1 : 0];
-    ModelDescriptor m{name, family, encoding, alpha, 0, {}};
+    ModelDescriptor m{name, family, encoding, alpha, 0, 0, {}};
     if (family == ColorFamily::rgb) {
-        m.components = {&colors[0], &colors[1], &colors[2], &component_alpha};
-        m.component_count = alpha == Alpha::none ? 3 : 4;
+        m.components = {&colors[0], &colors[1], &colors[2], &component_alpha, nullptr};
+        m.color_count = 3;
     } else {
-        m.components = {&colors[3], &component_alpha, nullptr, nullptr};
-        m.component_count = alpha == Alpha::none ? 1 : 2;
+        m.components = {&colors[3], &component_alpha, nullptr, nullptr, nullptr};
+        m.color_count = 1;
     }
+    m.component_count = m.color_count + (alpha == Alpha::none ? 0 : 1);
     return m;
 }
+
+// CIE components (decision S2: the names, order and conventions of the
+// reference catalogue). "CIE Y" is shared by XYZ, xyY and Yuv.
+constexpr ComponentDescriptor cie_x{"CIE X"}, cie_y{"CIE Y"}, cie_z{"CIE Z"}, cie_small_x{"CIE x"},
+    cie_small_y{"CIE y"}, cie_u{"CIE u"}, cie_v{"CIE v"}, cie_l{"CIE L"}, cie_a{"CIE a"}, cie_b{"CIE b"},
+    cie_c{"CIE C(ab)"}, cie_h{"CIE H(ab)"};
+
+constexpr ModelDescriptor cieModel(std::string_view name, ColorFamily family, const ComponentDescriptor& c0,
+                                   const ComponentDescriptor& c1, const ComponentDescriptor& c2, bool alpha)
+{
+    return {name,
+            family,
+            Encoding::none,
+            alpha ? Alpha::straight : Alpha::none,
+            3,
+            alpha ? std::size_t{4} : std::size_t{3},
+            {&c0, &c1, &c2, alpha ? &component_alpha : nullptr, nullptr}};
+}
+
+constexpr ModelDescriptor cie_models[] = {
+    cieModel("CIE XYZ", ColorFamily::cie_xyz, cie_x, cie_y, cie_z, false),
+    cieModel("CIE XYZ alpha", ColorFamily::cie_xyz, cie_x, cie_y, cie_z, true),
+    cieModel("CIE xyY", ColorFamily::cie_xyy, cie_small_x, cie_small_y, cie_y, false),
+    cieModel("CIE xyY alpha", ColorFamily::cie_xyy, cie_small_x, cie_small_y, cie_y, true),
+    cieModel("CIE Yuv", ColorFamily::cie_yuv, cie_y, cie_u, cie_v, false),
+    cieModel("CIE Yuv alpha", ColorFamily::cie_yuv, cie_y, cie_u, cie_v, true),
+    cieModel("CIE Lab", ColorFamily::cie_lab, cie_l, cie_a, cie_b, false),
+    cieModel("CIE Lab alpha", ColorFamily::cie_lab, cie_l, cie_a, cie_b, true),
+    cieModel("CIE LCH(ab)", ColorFamily::cie_lch, cie_l, cie_c, cie_h, false),
+    cieModel("CIE LCH(ab) alpha", ColorFamily::cie_lch, cie_l, cie_c, cie_h, true),
+};
+
+// Lab encodings of ICC.1 (v4): L 0..100 and a, b -128..127 over the full code range.
+constexpr TypeDescriptor cie_u8_l{"CIE u8 L", ComponentType::u8, 1, 0.0, 100.0};
+constexpr TypeDescriptor cie_u8_ab{"CIE u8 ab", ComponentType::u8, 1, -128.0, 127.0};
+constexpr TypeDescriptor cie_u16_l{"CIE u16 L", ComponentType::u16, 2, 0.0, 100.0};
+constexpr TypeDescriptor cie_u16_ab{"CIE u16 ab", ComponentType::u16, 2, -128.0, 127.0};
+
+// A CIE format with its own layout: (model component index, type) per stored component.
+struct CieFormat {
+    std::string_view name;
+    const ModelDescriptor* model;
+    std::size_t count;
+    std::array<FormatComponent, max_components> components;
+};
+
+constexpr const ModelDescriptor& cieModelNamed(std::string_view name)
+{
+    for (const ModelDescriptor& m : cie_models) {
+        if (m.name == name) {
+            return m;
+        }
+    }
+    return cie_models[0]; // unreachable for the names below
+}
+
+// The formats beyond "<model> float" and "<model> double".
+constexpr CieFormat cie_special_formats[] = {
+    {"CIE L float", &cieModelNamed("CIE Lab"), 1, {{{0, &types[4]}}}},
+    {"CIE L alpha float", &cieModelNamed("CIE Lab alpha"), 2, {{{0, &types[4]}, {3, &types[4]}}}},
+    {"CIE Lab u8", &cieModelNamed("CIE Lab"), 3, {{{0, &cie_u8_l}, {1, &cie_u8_ab}, {2, &cie_u8_ab}}}},
+    {"CIE Lab alpha u8",
+     &cieModelNamed("CIE Lab alpha"),
+     4,
+     {{{0, &cie_u8_l}, {1, &cie_u8_ab}, {2, &cie_u8_ab}, {3, &types[0]}}}},
+    {"CIE Lab u16", &cieModelNamed("CIE Lab"), 3, {{{0, &cie_u16_l}, {1, &cie_u16_ab}, {2, &cie_u16_ab}}}},
+    {"CIE Lab alpha u16",
+     &cieModelNamed("CIE Lab alpha"),
+     4,
+     {{{0, &cie_u16_l}, {1, &cie_u16_ab}, {2, &cie_u16_ab}, {3, &types[1]}}}},
+};
 
 constexpr ModelDescriptor models[] = {
     model("RGB", ColorFamily::rgb, Encoding::linear, Alpha::none),
@@ -258,15 +330,34 @@ Registry::Registry()
     addSpace("ACEScg", {aces_x, aces_y, 0.713, 0.293, 0.165, 0.830, 0.128, 0.044}, all(linear));
     addSpace("ACES2065-1", {aces_x, aces_y, 0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.0770}, all(linear));
 
-    // Every model in every type, in sRGB.
-    constexpr std::size_t count = std::size(models) * std::size(types);
-    base_names.reserve(count);
+    // Every RGB and gray model in every type; every CIE model in float and
+    // double, plus the CIE formats with their own layout. All in sRGB.
+    constexpr std::size_t count =
+        std::size(models) * std::size(types) + std::size(cie_models) * 2 + std::size(cie_special_formats);
+    base_names.reserve(count); // never reallocates: formats keep views into it
     base_formats.reserve(count);
+    const auto add = [&](std::string name, const ModelDescriptor& m, const TypeDescriptor& t) {
+        base_names.push_back(std::move(name));
+        base_formats.push_back(uniformFormat(base_names.back(), m, t, srgb_space));
+    };
     for (const ModelDescriptor& m : models) {
         for (const TypeDescriptor& t : types) {
-            base_names.push_back(std::string(m.name) + " " + std::string(t.name));
-            base_formats.push_back(FormatDescriptor{base_names.back(), base_names.back(), &m, &t, srgb_space});
+            add(std::string(m.name) + " " + std::string(t.name), m, t);
         }
+    }
+    for (const ModelDescriptor& m : cie_models) {
+        for (const TypeDescriptor* t : {&types[4], &types[5]}) {
+            add(std::string(m.name) + " " + std::string(t->name), m, *t);
+        }
+    }
+    for (const CieFormat& special : cie_special_formats) {
+        base_names.emplace_back(special.name);
+        FormatDescriptor f{base_names.back(), base_names.back(), special.model, srgb_space, special.count,
+                           special.components, 0, nullptr};
+        for (std::size_t i = 0; i < f.component_count; ++i) {
+            f.bytes_per_pixel += f.components[i].type->size;
+        }
+        base_formats.push_back(f);
     }
     for (const FormatDescriptor& f : base_formats) {
         base_by_name.emplace(f.name, &f);
@@ -305,11 +396,28 @@ const FormatDescriptor& formatInSpace(const FormatDescriptor& format, const Spac
     if (const auto found = r.by_space.find({&base, &space}); found != r.by_space.end()) {
         return *found->second;
     }
-    const std::string& name = r.space_format_names.emplace_back(std::string(base.name) + "-" + space.name);
-    const FormatDescriptor& created =
-        r.space_formats.emplace_back(FormatDescriptor{name, base.encoding, base.model, base.type, &space});
-    r.by_space.emplace(std::pair{&base, &space}, &created);
-    return created;
+    // Publish in three steps. If one throws (std::bad_alloc), the steps before it
+    // are undone, so a failed attempt leaves nothing unreachable behind. The name
+    // is built in place rather than moved: MSVC's Debug containers allocate
+    // inside noexcept moves, where a failure would terminate the process.
+    const auto slot = r.by_space.try_emplace({&base, &space}, nullptr).first;
+    try {
+        std::string& name = r.space_format_names.emplace_back(base.name);
+        try {
+            name.append("-").append(space.name);
+            FormatDescriptor variant = base;
+            variant.name = name;
+            variant.space = &space;
+            slot->second = &r.space_formats.emplace_back(variant);
+        } catch (...) {
+            r.space_format_names.pop_back();
+            throw;
+        }
+    } catch (...) {
+        r.by_space.erase(slot);
+        throw;
+    }
+    return *slot->second;
 }
 
 const FormatDescriptor* findFormat(std::string_view name)

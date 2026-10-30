@@ -1,6 +1,7 @@
 # Test sources shared by the host runner and the packaged UWP runner.
 set(CHROMAROUTE_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/support/test_harness.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/cie_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_math_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_semantics_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_space_tests.cpp
@@ -40,7 +41,7 @@ else()
   add_executable(chromaroute_allocation_failure_tests host/allocation_failure_tests.cpp)
   target_link_libraries(chromaroute_allocation_failure_tests PRIVATE ChromaRoute::chromaroute)
   chromaroute_apply_compiler_options(chromaroute_allocation_failure_tests)
-  foreach(mode first-touch plan-cache)
+  foreach(mode first-touch plan-cache space-variant concurrent-first-touch)
     add_test(NAME allocation_failure_${mode} COMMAND chromaroute_allocation_failure_tests ${mode})
   endforeach()
 
@@ -51,4 +52,14 @@ else()
   chromaroute_apply_compiler_options(chromaroute_exhaustive_tests)
   add_test(NAME exhaustive_r1_encode COMMAND chromaroute_exhaustive_tests CONFIGURATIONS Release)
   set_tests_properties(exhaustive_r1_encode PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
+
+  # Every R'G'B' u8 color to CIE Lab u8 and LCH(ab) float, and every binary32
+  # input of the range encoders (an internal function, so the private source
+  # tree is visible); Release only, like the encoder above.
+  add_executable(chromaroute_cie_exhaustive_tests exhaustive/cie_lab_exhaustive.cpp)
+  target_include_directories(chromaroute_cie_exhaustive_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_link_libraries(chromaroute_cie_exhaustive_tests PRIVATE ChromaRoute::chromaroute)
+  chromaroute_apply_compiler_options(chromaroute_cie_exhaustive_tests)
+  add_test(NAME exhaustive_cie COMMAND chromaroute_cie_exhaustive_tests CONFIGURATIONS Release)
+  set_tests_properties(exhaustive_cie PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
 endif()

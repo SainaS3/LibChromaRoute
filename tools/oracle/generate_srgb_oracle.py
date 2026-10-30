@@ -7,8 +7,9 @@ rounding decision closer than MARGIN to a boundary aborts generation instead of
 guessing; sampled cases that are too close to call are skipped and counted.
 
 Writes C++ headers <dir>/srgb_oracle_data.hpp (sRGB u8 <-> float, Milestone 1),
-<dir>/pixel_format_oracle_data.hpp (u16, luminance and gray cases, Milestone 2)
-and <dir>/color_semantics_oracle_data.hpp (built-in spaces, gamma, alpha).
+<dir>/pixel_format_oracle_data.hpp (u16, luminance and gray cases, Milestone 2),
+<dir>/color_semantics_oracle_data.hpp (built-in spaces, gamma, alpha) and
+<dir>/cie_oracle_data.hpp (CIE XYZ, xyY, Yuv, Lab, LCH(ab), Milestone 4).
 
 Usage: python tools/oracle/generate_srgb_oracle.py tests/data
 """
@@ -451,8 +452,369 @@ def write_color_semantics_oracle(path: str) -> None:
     print(f"color-semantics oracle: skipped {skipped} cases")
 
 
+# ---- CIE models (Milestone 4): CIE 15:2004 at 60 digits -------------------
+
+def d_cbrt(x: Decimal) -> Decimal:
+    if x == 0:
+        return D(0)
+    a = abs(x)
+    y = (a.ln() / 3).exp()
+    y -= (y * y * y - a) / (3 * y * y)  # one Newton step on top of exp/ln
+    return y if x > 0 else -y
+
+
+def d_atan_small(x: Decimal) -> Decimal:
+    """atan by halving the argument (atan x = 2 atan(x / (1 + sqrt(1 + x^2)))) and a Taylor series."""
+    halvings = 0
+    while abs(x) > D("0.001"):
+        x = x / (1 + (1 + x * x).sqrt())
+        halvings += 1
+    total, power, n = D(0), x, 0
+    while True:
+        term = power / (2 * n + 1)
+        if abs(term) < D(10) ** -75:
+            break
+        total += term if n % 2 == 0 else -term
+        power *= x * x
+        n += 1
+    return total * (2 ** halvings)
+
+
+PI = 16 * d_atan_small(D(1) / 5) - 4 * d_atan_small(D(1) / 239)  # Machin
+
+
+def d_atan2(y: Decimal, x: Decimal) -> Decimal:
+    if x > 0:
+        return d_atan_small(y / x)
+    if x < 0:
+        return d_atan_small(y / x) + (PI if y >= 0 else -PI)
+    return PI / 2 if y > 0 else (-PI / 2 if y < 0 else D(0))
+
+
+def d_sin_cos(angle: Decimal) -> tuple[Decimal, Decimal]:
+    two_pi = 2 * PI
+    angle = angle - two_pi * (angle / two_pi).to_integral_value()
+    s, c, term_s, term_c, n = D(0), D(0), angle, D(1), 0
+    while abs(term_s) > D(10) ** -75 or abs(term_c) > D(10) ** -75:
+        s += term_s
+        c += term_c
+        term_s = -term_s * angle * angle / ((2 * n + 2) * (2 * n + 3))
+        term_c = -term_c * angle * angle / ((2 * n + 1) * (2 * n + 2))
+        n += 1
+    return s, c
+
+
+D50 = [Fraction(63190, 65536), Fraction(1), Fraction(54061, 65536)]
+LAB_EPSILON = Fraction(216, 24389)
+LAB_KAPPA = Fraction(24389, 27)
+
+
+def lab_f(t: Decimal) -> Decimal:
+    return d_cbrt(t) if t > decimal(LAB_EPSILON) else (decimal(LAB_KAPPA) * t + 16) / 116
+
+
+def lab_f_inverse(f: Decimal) -> Decimal:
+    return f * f * f if f > D(6) / 29 else (116 * f - 16) / decimal(LAB_KAPPA)
+
+
+def lab_from_xyz(xyz: list[Decimal]) -> list[Decimal]:
+    fx, fy, fz = (lab_f(xyz[i] / decimal(D50[i])) for i in range(3))
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+
+
+def lab_magnitudes(xyz: list[Decimal]) -> list[Decimal]:
+    """Size of the terms each L*a*b* component is computed from (for the skip rule)."""
+    fx, fy, fz = (abs(lab_f(xyz[i] / decimal(D50[i]))) for i in range(3))
+    return [116 * fy + 16, 500 * (fx + fy), 200 * (fy + fz)]
+
+
+def xyz_from_lab(lab: list[Decimal]) -> list[Decimal]:
+    fy = (lab[0] + 16) / 116
+    ty = fy * fy * fy if lab[0] > 8 else lab[0] / decimal(LAB_KAPPA)
+    t = [lab_f_inverse(fy + lab[1] / 500), ty, lab_f_inverse(fy - lab[2] / 200)]
+    return [t[i] * decimal(D50[i]) for i in range(3)]
+
+
+def lch_from_lab(lab: list[Decimal]) -> list[Decimal]:
+    chroma = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt()
+    hue = d_atan2(lab[2], lab[1]) * 180 / PI
+    if hue < 0:
+        hue += 360
+    return [lab[0], chroma, hue]
+
+
+def f32_or_skip(value: Decimal, magnitude: Decimal):
+    """Nearest binary32 bits, or None when the value lies within 2^-40 * magnitude of a
+    binary32 midpoint or of zero (double evaluation cannot resolve closer)."""
+    v = Fraction(value)
+    window = Fraction(magnitude) * Fraction(1, 2**40)
+    if abs(v) <= window:
+        return None
+    return nearest_f32_or_skip(v, True, Fraction(magnitude))
+
+
+def u8_or_skip(value: Decimal, low: int, high: int):
+    """floor((v - low) * 255 / (high - low) + 1/2) clamped to 0..255, or None near a tie."""
+    scaled = (Fraction(value) - low) * 255 / (high - low)
+    if scaled <= 0:
+        return 0
+    if scaled >= 255:
+        return 255
+    level = int(scaled + Fraction(1, 2))
+    for tie in (level - Fraction(1, 2), level + Fraction(1, 2)):
+        if abs(scaled - tie) < Fraction(1, 10**9):
+            return None
+    return level
+
+
+def write_cie_oracle(path: str) -> None:
+    matrix = rgb_to_xyz_d50(BUILTIN_SPACES[0][1])           # sRGB, exact rationals
+    inverse = inverse3(matrix)
+    prophoto = rgb_to_xyz_d50(BUILTIN_SPACES[5][1])
+    rng = Lcg(0xC1E)
+    skipped = 0
+
+    def xyz_of(m, linear):
+        return [sum(decimal(m[r][k]) * linear[k] for k in range(3)) for r in range(3)]
+
+    def xyz_magnitudes(m, linear):
+        return [sum(abs(decimal(m[r][k]) * linear[k]) for k in range(3)) for r in range(3)]
+
+    # R'G'B' u8 (sRGB and ProPhoto) -> CIE Lab float and CIE Lab u8.
+    def lab_cases(m, decode, count, extra):
+        inputs, expected_f32, expected_u8 = [], [], []
+        nonlocal skipped
+        cases = list(extra)
+        while len(cases) < count:
+            r = rng.next()
+            cases.append((r & 0xFF, (r >> 8) & 0xFF, (r >> 16) & 0xFF))
+        for rgb in cases:
+            linear = [decode(c) for c in rgb]
+            xyz = xyz_of(m, linear)
+            lab = lab_from_xyz(xyz)
+            mags = lab_magnitudes(xyz)
+            bits = [f32_or_skip(lab[i], mags[i]) for i in range(3)]
+            codes = [u8_or_skip(lab[0], 0, 100), u8_or_skip(lab[1], -128, 127), u8_or_skip(lab[2], -128, 127)]
+            if None in bits or None in codes:
+                skipped += 1
+                continue
+            inputs.append(rgb[0] | rgb[1] << 8 | rgb[2] << 16)
+            expected_f32.extend(bits)
+            expected_u8.extend(codes)
+        return inputs, expected_f32, expected_u8
+
+    corners = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
+    srgb_in, srgb_lab, srgb_lab8 = lab_cases(matrix, lambda c: decimal(srgb_to_linear(Fraction(c, 255))[0]),
+                                             1024, corners)
+    gamma18 = Fraction(1.8)
+    pro_in, pro_lab, pro_lab8 = lab_cases(prophoto, lambda c: decimal(gamma_pow(Fraction(c, 255), gamma18)[0]),
+                                          256, corners)
+
+    # sRGB gray u8 -> CIE L (a = b = 0 exactly for a gray source).
+    gray_l = []
+    for v in range(256):
+        y = decimal(srgb_to_linear(Fraction(v, 255))[0])
+        bits = f32_or_skip(116 * lab_f(y) - 16, 116 * abs(lab_f(y)) + 16) if v else 0
+        if bits is None:
+            raise SystemExit(f"gray L for {v} too close to call")
+        gray_l.append(bits)
+
+    # Linear sRGB float -> CIE XYZ, xyY, Yuv and LCH(ab) float.
+    float_inputs, xyz_out, xyy_out, yuv_out, lch_out = [], [], [], [], []
+    while len(float_inputs) < 512 * 3:
+        rgb = [struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] * 1.2 - 1.3 for _ in range(3)]
+        rgb = [struct.unpack("<f", struct.pack("<f", c))[0] for c in rgb]
+        linear = [D(c) for c in rgb]
+        xyz = xyz_of(matrix, linear)
+        mags = xyz_magnitudes(matrix, linear)
+        total = xyz[0] + xyz[1] + xyz[2]
+        total_mag = mags[0] + mags[1] + mags[2]
+        denominator = xyz[0] + 15 * xyz[1] + 3 * xyz[2]
+        den_mag = mags[0] + 15 * mags[1] + 3 * mags[2]
+        lab = lab_from_xyz(xyz)
+        lch = lch_from_lab(lab)
+        lab_mags = lab_magnitudes(xyz)
+        if abs(total) < total_mag / 1000 or abs(denominator) < den_mag / 1000:
+            skipped += 1  # chromaticities of near-black: badly conditioned
+            continue
+        candidates = [
+            [f32_or_skip(xyz[i], mags[i]) for i in range(3)],
+            [f32_or_skip(xyz[0] / total, total_mag / abs(total)), f32_or_skip(xyz[1] / total, total_mag / abs(total)),
+             f32_or_skip(xyz[1], mags[1])],
+            [f32_or_skip(xyz[1], mags[1]), f32_or_skip(4 * xyz[0] / denominator, 4 * den_mag / abs(denominator)),
+             f32_or_skip(9 * xyz[1] / denominator, 9 * den_mag / abs(denominator))],
+            [f32_or_skip(lch[0], lab_mags[0]), f32_or_skip(lch[1], lab_mags[1] + lab_mags[2]),
+             f32_or_skip(lch[2], 360 * (lab_mags[1] + lab_mags[2]) / max(lch[1], D(10) ** -30))],
+        ]
+        if any(None in group for group in candidates):
+            skipped += 1
+            continue
+        float_inputs.extend(f32_bits(c) for c in rgb)
+        for out, group in zip((xyz_out, xyy_out, yuv_out, lch_out), candidates):
+            out.extend(group)
+
+    # CIE Lab float -> R'G'B' u8 (sRGB).
+    lab_inputs, rgb_from_lab = [], []
+    while len(rgb_from_lab) < 1024 * 3:
+        values = [struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] - 1.0 for _ in range(3)]
+        lab32 = [values[0] * 100.0, values[1] * 80.0 - 40.0, values[2] * 80.0 - 40.0]
+        lab32 = [struct.unpack("<f", struct.pack("<f", c))[0] for c in lab32]
+        xyz = xyz_from_lab([D(c) for c in lab32])
+        linear = [sum(decimal(inverse[r][k]) * xyz[k] for k in range(3)) for r in range(3)]
+        out = [quantize_or_skip(linear_to_srgb(Fraction(c))[0], 255) for c in linear]
+        if None in out:
+            skipped += 1
+            continue
+        lab_inputs.extend(f32_bits(c) for c in lab32)
+        rgb_from_lab.extend(out)
+
+    # The tables below draw after the ones above, which therefore stay unchanged.
+    def unit() -> float:
+        return struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] - 1.0
+
+    def to_f32(x: float) -> float:
+        return struct.unpack("<f", struct.pack("<f", x))[0]
+
+    # Near black, linear sRGB float -> CIE Lab float. Every t <= epsilon, so L = kappa t,
+    # a = 500 kappa / 116 (tx - ty) and b = 200 kappa / 116 (ty - tz) are exact rationals.
+    # Magnitudes are those of the terms of that cancellation-free form.
+    dark_inputs, dark_lab = [], []
+    while len(dark_inputs) < 256 * 3:
+        rgb = [to_f32((1 + 9 * unit()) * 10.0 ** -(4 + rng.next() % 27) * (-1 if rng.next() % 4 == 0 else 1))
+               for _ in range(3)]
+        exact = [Fraction(c) for c in rgb]
+        t = [sum(matrix[r][k] * exact[k] for k in range(3)) / D50[r] for r in range(3)]
+        t_mag = [sum(abs(matrix[r][k] * exact[k]) for k in range(3)) / D50[r] for r in range(3)]
+        lab = [LAB_KAPPA * t[1], 500 * LAB_KAPPA / 116 * (t[0] - t[1]), 200 * LAB_KAPPA / 116 * (t[1] - t[2])]
+        mags = [LAB_KAPPA * t_mag[1], 500 * LAB_KAPPA / 116 * (t_mag[0] + t_mag[1]),
+                200 * LAB_KAPPA / 116 * (t_mag[1] + t_mag[2])]
+        bits = [f32_or_skip(decimal(lab[i]), decimal(mags[i])) for i in range(3)]
+        if None in bits:
+            skipped += 1
+            continue
+        dark_inputs.extend(f32_bits(c) for c in rgb)
+        dark_lab.extend(bits)
+
+    # Near black, Y float -> CIE L float: L = kappa Y, down to binary32 subnormals.
+    dark_y_inputs, dark_y_l = [], []
+    for k in range(3, 46):
+        y = to_f32(10.0 ** -k)
+        bits = nearest_f32_or_skip(LAB_KAPPA * Fraction(y), True, 4 * LAB_KAPPA * Fraction(y))
+        if bits is None:
+            skipped += 1
+            continue
+        dark_y_inputs.append(f32_bits(y))
+        dark_y_l.append(bits)
+
+    # CIE LCH(ab) float -> CIE Lab float, hues in [-360, 720).
+    lch_inputs, lch_lab = [], []
+    while len(lch_inputs) < 512 * 3:
+        lch32 = [to_f32(100 * unit()), to_f32(120 * unit()), to_f32(1080 * unit() - 360)]
+        lch = [D(c) for c in lch32]
+        angle = lch[2] * PI / 180
+        sine, cosine = d_sin_cos(angle)
+        size = lch[1] * (1 + abs(angle))
+        bits = [f32_bits(lch32[0]), f32_or_skip(lch[1] * cosine, size), f32_or_skip(lch[1] * sine, size)]
+        if None in bits:
+            skipped += 1
+            continue
+        lch_inputs.extend(f32_bits(c) for c in lch32)
+        lch_lab.extend(bits)
+
+    # CIE xyY float and CIE Yuv float -> CIE XYZ float.
+    xyy_inputs, xyy_xyz, yuv_inputs, yuv_xyz = [], [], [], []
+    while len(xyy_inputs) < 256 * 3:
+        x, y, big_y = to_f32(0.05 + 0.65 * unit()), to_f32(0.05 + 0.75 * unit()), to_f32(1.2 * unit())
+        dx, dy, dY = D(x), D(y), D(big_y)
+        bits = [f32_or_skip(dx * dY / dy, 4 * abs(dx * dY / dy)), f32_bits(big_y),
+                f32_or_skip((1 - dx - dy) * dY / dy, 4 * (1 + dx + dy) * dY / dy)]
+        if None in bits:
+            skipped += 1
+            continue
+        xyy_inputs.extend(f32_bits(c) for c in (x, y, big_y))
+        xyy_xyz.extend(bits)
+    while len(yuv_inputs) < 256 * 3:
+        big_y, u, v = to_f32(1.2 * unit()), to_f32(0.05 + 0.55 * unit()), to_f32(0.1 + 0.5 * unit())
+        dY, du, dv = D(big_y), D(u), D(v)
+        bits = [f32_or_skip(9 * du * dY / (4 * dv), 4 * abs(9 * du * dY / (4 * dv))), f32_bits(big_y),
+                f32_or_skip(dY * (12 - 3 * du - 20 * dv) / (4 * dv), 4 * dY * (12 + 3 * du + 20 * dv) / (4 * dv))]
+        if None in bits:
+            skipped += 1
+            continue
+        yuv_inputs.extend(f32_bits(c) for c in (big_y, u, v))
+        yuv_xyz.extend(bits)
+
+    # CIE Lab float -> CIE XYZ float, R'G'B' u8-ProPhoto and Y' u8 (sRGB). One case in
+    # eight is dark (L <= 10), for the linear branch of the inverse.
+    prophoto_inverse = inverse3(prophoto)
+    inverse_inputs, inverse_xyz, inverse_prophoto, inverse_gray = [], [], [], []
+    while len(inverse_inputs) < 1024 * 3:
+        lab32 = [to_f32((10 if rng.next() % 8 == 0 else 100) * unit()), to_f32(160 * unit() - 80),
+                 to_f32(160 * unit() - 80)]
+        lab = [D(c) for c in lab32]
+        xyz = xyz_from_lab(lab)
+        fy = (lab[0] + 16) / 116
+        f_mag = [abs(fy) + abs(lab[1]) / 500, None, abs(fy) + abs(lab[2]) / 200]
+        f = [fy + lab[1] / 500, None, fy - lab[2] / 200]
+        t_mag = [0, 0, 0]
+        for i in (0, 2):
+            t_mag[i] = 3 * f[i] * f[i] * f_mag[i] if f[i] > D(6) / 29 else 116 * f_mag[i] / decimal(LAB_KAPPA)
+        t_mag[1] = 3 * fy * fy * (abs(lab[0]) + 16) / 116 if lab[0] > 8 else abs(lab[0]) / decimal(LAB_KAPPA)
+        xyz_bits = [f32_or_skip(xyz[i], t_mag[i] * decimal(D50[i])) for i in range(3)]
+        linear = [sum(decimal(prophoto_inverse[r][k]) * xyz[k] for k in range(3)) for r in range(3)]
+        pro = [quantize_or_skip(gamma_pow(Fraction(c), 1 / gamma18)[0], 255) for c in linear]
+        gray = quantize_or_skip(linear_to_srgb(Fraction(xyz[1]))[0], 255)
+        if None in xyz_bits or None in pro or gray is None:
+            skipped += 1
+            continue
+        inverse_inputs.extend(f32_bits(c) for c in lab32)
+        inverse_xyz.extend(xyz_bits)
+        inverse_prophoto.extend(pro)
+        inverse_gray.append(gray)
+
+    with open(path, "w", newline="\n") as f:
+        begin_header(f,
+                     "Generated by tools/oracle/generate_srgb_oracle.py; do not edit.\n"
+                     "CIE models per CIE 15:2004 (D50 ICC white, exact epsilon = 216/24389 and\n"
+                     "kappa = 24389/27), spaces per decisions N4 and N5, evaluated at 60 digits;\n"
+                     "binary32 bit patterns and u8 codes.\n"
+                     f"Cases skipped as too close to call: {skipped}.",
+                     ["array", "cstdint"])
+        f.write(u32_table("srgb_u8_inputs", "R'G'B' u8 (sRGB): R | G << 8 | B << 16", srgb_in))
+        f.write(u32_table("srgb_u8_to_lab_f32", "CIE Lab float L, a, b", srgb_lab))
+        f.write(u32_table("srgb_u8_to_lab_u8", "CIE Lab u8 L, a, b codes", srgb_lab8))
+        f.write(u32_table("prophoto_u8_inputs", "R'G'B' u8-ProPhoto: R | G << 8 | B << 16", pro_in))
+        f.write(u32_table("prophoto_u8_to_lab_f32", "CIE Lab float L, a, b", pro_lab))
+        f.write(u32_table("prophoto_u8_to_lab_u8", "CIE Lab u8 L, a, b codes", pro_lab8))
+        f.write(u32_table("srgb_gray_u8_to_l_f32", "[v]: CIE L of R'G'B' u8 (v, v, v)", gray_l))
+        f.write(u32_table("linear_f32_inputs", "linear sRGB R, G, B (binary32 bits)", float_inputs))
+        f.write(u32_table("linear_f32_to_xyz_f32", "CIE XYZ float", xyz_out))
+        f.write(u32_table("linear_f32_to_xyy_f32", "CIE xyY float", xyy_out))
+        f.write(u32_table("linear_f32_to_yuv_f32", "CIE Yuv float (Y, u', v')", yuv_out))
+        f.write(u32_table("linear_f32_to_lch_f32", "CIE LCH(ab) float (L, C, H degrees)", lch_out))
+        f.write(u32_table("lab_f32_inputs", "CIE Lab float L, a, b (binary32 bits)", lab_inputs))
+        f.write(u32_table("lab_f32_to_srgb_u8", "R'G'B' u8 (sRGB) components", rgb_from_lab))
+        f.write(u32_table("dark_f32_inputs", "linear sRGB R, G, B near black (binary32 bits)", dark_inputs))
+        f.write(u32_table("dark_f32_to_lab_f32", "CIE Lab float L, a, b", dark_lab))
+        f.write(u32_table("dark_y_f32_inputs", "Y float near black (binary32 bits)", dark_y_inputs))
+        f.write(u32_table("dark_y_f32_to_l_f32", "CIE L float", dark_y_l))
+        f.write(u32_table("lch_f32_inputs", "CIE LCH(ab) float L, C, H degrees (binary32 bits)", lch_inputs))
+        f.write(u32_table("lch_f32_to_lab_f32", "CIE Lab float L, a, b", lch_lab))
+        f.write(u32_table("xyy_f32_inputs", "CIE xyY float x, y, Y (binary32 bits)", xyy_inputs))
+        f.write(u32_table("xyy_f32_to_xyz_f32", "CIE XYZ float", xyy_xyz))
+        f.write(u32_table("yuv_f32_inputs", "CIE Yuv float Y, u', v' (binary32 bits)", yuv_inputs))
+        f.write(u32_table("yuv_f32_to_xyz_f32", "CIE XYZ float", yuv_xyz))
+        f.write(u32_table("lab_inverse_f32_inputs", "CIE Lab float L, a, b (binary32 bits)", inverse_inputs))
+        f.write(u32_table("lab_inverse_f32_to_xyz_f32", "CIE XYZ float", inverse_xyz))
+        f.write(u32_table("lab_inverse_f32_to_prophoto_u8", "R'G'B' u8-ProPhoto components", inverse_prophoto))
+        f.write(u32_table("lab_inverse_f32_to_gray_u8", "Y' u8 (sRGB)", inverse_gray))
+        end_header(f)
+    print(f"CIE oracle: skipped {skipped} cases")
+
+
 def main() -> None:
     out_dir = sys.argv[1]
+    write_cie_oracle(f"{out_dir}/cie_oracle_data.hpp")
     write_color_semantics_oracle(f"{out_dir}/color_semantics_oracle_data.hpp")
     write_pixel_format_oracle(f"{out_dir}/pixel_format_oracle_data.hpp")
     out_path = f"{out_dir}/srgb_oracle_data.hpp"

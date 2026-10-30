@@ -108,9 +108,12 @@ public:
 
     // Engine access; not part of the stable API.
     [[nodiscard]] const detail::SpaceDescriptor& descriptor() const noexcept { return *descriptor_; }
-    explicit ColorSpace(const detail::SpaceDescriptor* descriptor) noexcept : descriptor_(descriptor) {}
 
 private:
+    // Handles come only from the factories, so they are always valid (A8).
+    friend class PixelFormat;
+    explicit ColorSpace(const detail::SpaceDescriptor* descriptor) noexcept : descriptor_(descriptor) {}
+
     const detail::SpaceDescriptor* descriptor_;
 };
 

@@ -234,3 +234,51 @@ CR_TEST(perceptual_models_always_use_the_srgb_curve)
     }
     CR_CHECK(mismatches == 0);
 }
+
+CR_TEST(channels_with_different_trcs_decode_and_encode_independently)
+{
+    // Linear red, sRGB green, gamma 2.2 blue: each channel must match a space
+    // that uses its TRC on every channel, in both directions.
+    using chromaroute::Converter;
+    const ColorSpace srgb = ColorSpace::srgb();
+    const TransferFunction gamma22 = *TransferFunction::gamma(2.2);
+    const ColorSpace mixed = *ColorSpace::fromChromaticities("", srgb.chromaticities(), TransferFunction::linear(),
+                                                               TransferFunction::srgb(), gamma22);
+    std::vector<std::uint8_t> codes;
+    for (int c = 0; c < 256; ++c) {
+        codes.insert(codes.end(), 3, static_cast<std::uint8_t>(c));
+    }
+    const auto run = [](const char* from, const char* to, const ColorSpace& s, std::span<const std::byte> in,
+                        std::span<std::byte> out) {
+        const Converter c = *Converter::create(PixelFormat::fromName(from)->withSpace(s), PixelFormat::fromName(to)->withSpace(s));
+        return static_cast<bool>(c.process(in, out, 256));
+    };
+    const auto decode = [&](const ColorSpace& s) {
+        std::vector<double> out(codes.size());
+        (void)run("R'G'B' u8", "RGB double", s, std::as_bytes(std::span(codes)), std::as_writable_bytes(std::span(out)));
+        return out;
+    };
+    const auto decoded = decode(mixed);
+    const auto linear = decode(srgb.withTransfer(TransferFunction::linear()));
+    const auto curve = decode(srgb);
+    const auto power = decode(srgb.withTransfer(gamma22));
+    int differ = 0;
+    for (std::size_t c = 0; c < 256; ++c) {
+        differ += decoded[c * 3] != linear[c * 3] || decoded[c * 3 + 1] != curve[c * 3 + 1] ||
+                  decoded[c * 3 + 2] != power[c * 3 + 2];
+    }
+    std::vector<std::uint8_t> encoded(codes.size());
+    differ += !run("RGB double", "R'G'B' u8", mixed, std::as_bytes(std::span(decoded)), std::as_writable_bytes(std::span(encoded)));
+    differ += encoded != codes;
+    // A gray model in that space uses the first (red) TRC.
+    std::vector<std::uint8_t> gray_codes(256);
+    for (int c = 0; c < 256; ++c) {
+        gray_codes[c] = static_cast<std::uint8_t>(c);
+    }
+    std::vector<double> gray(256);
+    differ += !run("Y' u8", "Y double", mixed, std::as_bytes(std::span(gray_codes)), std::as_writable_bytes(std::span(gray)));
+    for (std::size_t c = 0; c < 256; ++c) {
+        differ += gray[c] != c / 255.0;
+    }
+    CR_CHECK(differ == 0);
+}

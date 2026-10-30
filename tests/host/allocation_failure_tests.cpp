@@ -9,6 +9,12 @@
 //       For n = 1, 2, ...: the n-th allocation inside Converter::create fails.
 //       Nothing half-built may remain: the next attempt for that pair must
 //       succeed and convert correctly.
+//   chromaroute_allocation_failure_tests space-variant
+//       The same for PixelFormat::withSpace, each time for a format and space
+//       not combined before: afterwards there is exactly one variant.
+//   chromaroute_allocation_failure_tests concurrent-first-touch
+//       No failures: eight threads make the first registry calls of the
+//       process at the same time and must get the same interned descriptors.
 
 #include <chromaroute/chromaroute.hpp>
 
@@ -19,6 +25,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -131,6 +139,99 @@ int planCacheTest()
     return failures;
 }
 
+int spaceVariantTest()
+{
+    using chromaroute::ColorSpace;
+    using chromaroute::PixelFormat;
+
+    std::vector<std::pair<PixelFormat, ColorSpace>> pairs;
+    for (const char* base : {"RGBA float", "CIE Lab u8", "Y' u16", "CIE L alpha float"}) {
+        for (const char* space : {"scRGB", "Rec2020", "DisplayP3", "Adobish", "ProPhoto", "Apple", "ACEScg", "ACES2065-1"}) {
+            pairs.emplace_back(*PixelFormat::fromName(base), *ColorSpace::fromName(space));
+        }
+    }
+    int failed_creations = 0;
+    bool covered_all = false;
+    for (std::size_t n = 1; n <= pairs.size() && !covered_all; ++n) {
+        const auto& [base, space] = pairs[n - 1];
+        fail_countdown = static_cast<long>(n);
+        bool threw = false;
+        try {
+            (void)base.withSpace(space);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        const bool reached = fail_countdown.load() == 0;
+        fail_countdown = 0;
+        covered_all = !reached; // the variant needs fewer than n allocations
+        failed_creations += threw;
+        check(threw == reached, "withSpace throws exactly when its allocation fails");
+
+        const PixelFormat variant = base.withSpace(space);
+        const auto by_name = PixelFormat::fromName(std::string(base.name()) + "-" + std::string(space.name()));
+        check(variant == base.withSpace(space) && by_name.has_value() && *by_name == variant,
+              "one variant after a failed attempt");
+        check(variant.space() == space && variant.componentCount() == base.componentCount() &&
+                  variant.bytesPerPixel() == base.bytesPerPixel(),
+              "the variant keeps the base layout");
+    }
+    std::printf("  failed creations injected: %d\n", failed_creations);
+    check(covered_all, "every allocation position of withSpace was exercised");
+    check(failed_creations >= 2, "at least two allocation positions were exercised");
+    return failures;
+}
+
+int concurrentFirstTouchTest()
+{
+    using chromaroute::ColorSpace;
+    using chromaroute::Converter;
+    using chromaroute::PixelFormat;
+    using chromaroute::TransferFunction;
+
+    constexpr int thread_count = 8;
+    struct Seen {
+        const void* space = nullptr;
+        const void* format = nullptr;
+        float lab[4] = {};
+    };
+    std::vector<Seen> seen(thread_count);
+    std::atomic<int> ready{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < thread_count; ++t) {
+        threads.emplace_back([&, t] {
+            ++ready;
+            while (ready.load() < thread_count) {
+                // start together
+            }
+            Seen& s = seen[t];
+            const TransferFunction trc = *TransferFunction::gamma(2.4);
+            const ColorSpace space = *ColorSpace::fromChromaticities("", ColorSpace::srgb().chromaticities(), trc);
+            const PixelFormat format = PixelFormat::fromName("R'G'B'A u8")->withSpace(space);
+            s.space = &space.descriptor();
+            s.format = &format.descriptor();
+            const auto converter = Converter::create(format, *PixelFormat::fromName("CIE Lab alpha float-Rec2020"));
+            const unsigned char pixel[4] = {200, 100, 50, 255};
+            if (converter) {
+                (void)converter->process(std::as_bytes(std::span(pixel)), std::as_writable_bytes(std::span(s.lab)), 1);
+            }
+        });
+    }
+    // The main thread only waits: the workers make the first registry calls.
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    bool same = true;
+    for (const Seen& s : seen) {
+        same = same && s.space == seen[0].space && s.format == seen[0].format;
+        for (int i = 0; i < 4; ++i) {
+            same = same && s.lab[i] == seen[0].lab[i];
+        }
+    }
+    check(same, "every thread gets the same descriptors and results");
+    check(seen[0].lab[0] > 0.0f && seen[0].lab[3] == 1.0f, "the conversion ran");
+    return failures;
+}
+
 } // namespace
 
 void* operator new(std::size_t size)
@@ -172,8 +273,13 @@ int main(int argc, char** argv)
         result = firstTouchTest();
     } else if (mode == "plan-cache") {
         result = planCacheTest();
+    } else if (mode == "space-variant") {
+        result = spaceVariantTest();
+    } else if (mode == "concurrent-first-touch") {
+        result = concurrentFirstTouchTest();
     } else {
-        std::printf("usage: chromaroute_allocation_failure_tests first-touch|plan-cache\n");
+        std::printf("usage: chromaroute_allocation_failure_tests first-touch|plan-cache|space-variant|"
+                    "concurrent-first-touch\n");
         return 2;
     }
     std::printf("%s: %s\n", std::string(mode).c_str(), result == 0 ? "PASS" : "FAIL");

@@ -79,3 +79,47 @@ CR_TEST(concurrent_creation_yields_equivalent_converters)
     }
     CR_CHECK(failures.load() == 0);
 }
+
+CR_TEST(concurrent_space_and_variant_creation_interns_once)
+{
+    // Threads start together and create spaces, gamma TRCs and format variants:
+    // some with parameters every thread shares, some with their own. Equal
+    // parameters must give one descriptor, different ones distinct descriptors.
+    using chromaroute::ColorSpace;
+    using chromaroute::TransferFunction;
+    std::vector<std::vector<PixelFormat>> made(thread_count);
+    std::atomic<int> ready{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < thread_count; ++t) {
+        threads.emplace_back([&, t] {
+            ++ready;
+            while (ready.load() < thread_count) {
+                // start together
+            }
+            const ColorSpace srgb = ColorSpace::srgb();
+            for (const double gamma : {1.93, 2.31 + 0.01 * t}) {
+                const ColorSpace s = *ColorSpace::fromChromaticities("", srgb.chromaticities(), *TransferFunction::gamma(gamma));
+                for (const char* name : {"R'G'B'A u8", "CIE Lab u16", "Y'A float"}) {
+                    made[t].push_back(PixelFormat::fromName(name)->withSpace(s));
+                }
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    int problems = 0;
+    for (int t = 0; t < thread_count; ++t) {
+        for (std::size_t i = 0; i < 3; ++i) {
+            problems += made[t][i] != made[0][i]; // shared parameters
+        }
+        for (int u = 0; u < t; ++u) {
+            problems += made[t][3] == made[u][3]; // each thread's own gamma
+        }
+        for (const PixelFormat& f : made[t]) {
+            const auto by_name = PixelFormat::fromName(f.name());
+            problems += !by_name || *by_name != f;
+        }
+    }
+    CR_CHECK(problems == 0);
+}

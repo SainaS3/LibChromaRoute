@@ -2,10 +2,14 @@
 
 A C++20 static library for converting pixels between formats and color spaces.
 
-- **Formats:** 108 built in (18 RGB and gray models x 6 types), each available in
-  every color space. Models can be linear, `'` (the space's TRC) or `~` (the sRGB
-  curve), with no alpha, straight alpha or associated alpha. Examples: `RGBA`,
-  `R'aG'aB'aA`, `R~G~B~`, `Y'A`.
+- **Formats:** 134 built in, each available in every color space.
+  - 108 RGB and gray formats: 18 models × 6 types. Models can be linear, `'` (the
+    space's TRC) or `~` (the sRGB curve), with no alpha, straight alpha or associated
+    alpha. Examples: `RGBA`, `R'aG'aB'aA`, `R~G~B~`, `Y'A`.
+  - 26 CIE formats: `CIE XYZ`, `CIE xyY`, `CIE Yuv`, `CIE Lab` and `CIE LCH(ab)`, each
+    with or without alpha, in `float` and `double`; plus `CIE Lab u8/u16` (ICC v4
+    Lab encodings) and `CIE L float`.
+  - More color models follow in later milestones ([docs/model_coverage.md](docs/model_coverage.md)).
 - **Types:** `u8`, `u16`, `u32`, `half`, `float`, `double`.
 - **Color spaces:** sRGB, scRGB, Rec2020, DisplayP3, Adobish, ProPhoto, Apple,
   ACEScg, ACES2065-1, plus spaces created from chromaticities or an RGB to XYZ matrix
@@ -25,6 +29,22 @@ auto converter = chromaroute::Converter::create(*source, *target);
 chromaroute::Status status = converter->process(std::as_bytes(std::span(pixels)),
                                                 std::as_writable_bytes(std::span(linear)), pixel_count);
 ```
+
+## Not supported
+
+- ICC profiles (planned for M8), rendering intents, black-point compensation and
+  gamut mapping. Integer outputs clamp each channel on its own.
+- Absolute luminance and HDR transfer functions (PQ, HLG). The built-in Rec2020 uses
+  the sRGB curve and ProPhoto a pure 1.8 power, as in babl, not BT.2020's OETF or
+  ProPhoto's ROMM curve (open decision S6).
+- Color models other than RGB, gray and CIE: Oklab, Y′CbCr, HSL/HSV/HCY and CMYK
+  follow in M5–M7.
+- Buffers other than tightly packed interleaved pixels: no row stride (convert one
+  row at a time), planar or subsampled data, BGRA/BGR or packed formats, or in-place
+  conversion.
+- Associated alpha keeps color at alpha 0 by dividing and multiplying by 2^-16 there,
+  which is not ordinary premultiplication (open decision N10).
+- iOS and Mac Catalyst builds, an install package and benchmarks.
 
 ## Targets
 
