@@ -162,6 +162,23 @@ inline constexpr double white_v = 9.0 * cie_white[1] / white_denominator;
     return std::ldexp(ma * mb / mc * factor, ea + eb - ec);
 }
 
+// The power of two by which the terms of a numerator such as 1 - x - y are
+// scaled down, together with its divisor, so that their sum cannot overflow; the
+// quotient is unchanged. It is 0, and results stay bit for bit the same, unless
+// a chromaticity exceeds 2^1000 in magnitude: below that a sum of these few
+// terms stays finite. Small terms scaled into the subnormal range are then far
+// below the precision of the sum.
+[[nodiscard]] inline int numeratorExponent(double a, double b) noexcept
+{
+    const double largest = std::max(std::fabs(a), std::fabs(b));
+    if (!(largest > 0x1p1000) || !std::isfinite(largest)) {
+        return 0;
+    }
+    int exponent = 0;
+    (void)std::frexp(largest, &exponent);
+    return exponent;
+}
+
 // xyY from (true) XYZ. Black takes the white's chromaticity; another color with
 // X + Y + Z = 0, or a color with a non-finite component, has none (NaN).
 [[nodiscard]] inline Vector3 xyyFromXyz(const Vector3& xyz) noexcept
@@ -188,7 +205,10 @@ inline constexpr double white_v = 9.0 * cie_white[1] / white_denominator;
         const double v = luminance == 0.0 && !std::isnan(x) ? 0.0 : std::numeric_limits<double>::quiet_NaN();
         return {v, luminance, v};
     }
-    return {productQuotient(x, luminance, y), luminance, productQuotient(1.0 - x - y, luminance, y)};
+    // Z = (1 - x - y) Y / y, with the terms and y scaled together for extreme x, y.
+    const int e = numeratorExponent(x, y);
+    const double numerator = std::ldexp(1.0, -e) - std::ldexp(x, -e) - std::ldexp(y, -e);
+    return {productQuotient(x, luminance, y), luminance, productQuotient(numerator, luminance, std::ldexp(y, -e))};
 }
 
 // CIE 1976 Y u' v' from (true) XYZ. Black takes the white's u' v'; another
@@ -218,9 +238,12 @@ inline constexpr double white_v = 9.0 * cie_white[1] / white_denominator;
         const double value = luminance == 0.0 && !std::isnan(u) ? 0.0 : std::numeric_limits<double>::quiet_NaN();
         return {value, luminance, value};
     }
-    // X = 9 u' Y / (4 v') and Z = Y (12 - 3 u' - 20 v') / (4 v').
-    return {productQuotient(u, luminance, v, 2.25), luminance,
-            productQuotient(12.0 - 3.0 * u - 20.0 * v, luminance, v, 0.25)};
+    // X = 9 u' Y / (4 v') and Z = Y (12 - 3 u' - 20 v') / (4 v'), with the terms
+    // of Z's numerator and v' scaled together for extreme u', v'.
+    const int e = numeratorExponent(u, v);
+    const double scaled_v = std::ldexp(v, -e);
+    const double numerator = std::ldexp(12.0, -e) - 3.0 * std::ldexp(u, -e) - 20.0 * scaled_v;
+    return {productQuotient(u, luminance, v, 2.25), luminance, productQuotient(numerator, luminance, scaled_v, 0.25)};
 }
 
 } // namespace chromaroute::detail

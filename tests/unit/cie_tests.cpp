@@ -755,6 +755,14 @@ CR_TEST(chromaticities_keep_finite_results_at_every_exponent)
     // 20 v') / (4 v') = 7e307 although Y (12 - 3 u' - 20 v') / v' overflows.
     const auto uv_factor = convert<double>("CIE Yuv double", "CIE XYZ double", std::vector<double>{1e308, 0.2, 0.5});
     CR_CHECK(std::fabs(uv_factor[0] / 9e307 - 1.0) < 1e-15 && std::fabs(uv_factor[2] / 7e307 - 1.0) < 1e-15);
+    // Extreme chromaticities: the numerators 1 - x - y and 12 - 3 u' - 20 v'
+    // overflow on their own, the results do not.
+    const auto xy_extreme = convert<double>("CIE xyY double", "CIE XYZ double", std::vector<double>{1e308, 1e308, 1.0});
+    CR_CHECK(xy_extreme[0] == 1.0 && xy_extreme[1] == 1.0 && xy_extreme[2] == -2.0);
+    const auto uv_extreme = convert<double>("CIE Yuv double", "CIE XYZ double",
+                                            std::vector<double>{1.0, 1e308, 1e308, 1.0, -1e308, 1e308});
+    CR_CHECK(uv_extreme[0] == 2.25 && uv_extreme[1] == 1.0 && std::fabs(uv_extreme[2] + 5.75) < 1e-15);
+    CR_CHECK(uv_extreme[3] == -2.25 && std::fabs(uv_extreme[5] + 4.25) < 1e-15);
     // Near underflow every inverse result is rounded once: it equals the same
     // conversion at a normal scale, scaled down.
     differ = 0;
@@ -852,4 +860,81 @@ CR_TEST(matrix_spaces_use_their_own_matrix_for_neutrals)
         }
     }
     CR_CHECK(worst < 1e-14);
+}
+
+CR_TEST(gray_in_a_matrix_space_means_r_equals_g_equals_b)
+{
+    // A gray value is R = G = B in its own space, in both directions (N11). In
+    // this space R = G = B = 1 has luminance 2 (the Y row sums to 2), so a
+    // luminance becomes a gray value by dividing by 2.
+    using chromaroute::ColorSpace;
+    using chromaroute::TransferFunction;
+    const chromaroute::Matrix3 m{{{0.8720, 0.7702, 0.2862}, {0.4450, 1.4338, 0.1212}, {0.0278, 0.1942, 1.4282}}};
+    const chromaroute::Matrix3 quarter{{{0.2180, 0.19255, 0.07155}, {0.11125, 0.35845, 0.0303}, {0.00695, 0.04855, 0.35705}}};
+    const TransferFunction linear = TransferFunction::linear();
+    const TransferFunction srgb = TransferFunction::srgb();
+    const ColorSpace two = *ColorSpace::fromRgbToXyz("y-sum-2", {1.9284, 2, 1.6502}, m, linear, linear, linear);
+    const ColorSpace half = *ColorSpace::fromRgbToXyz("y-sum-half", {0.4821, 0.5, 0.41255}, quarter, srgb, srgb, srgb);
+    const std::string in_two = "-" + std::string(two.name());
+    const std::string in_half = "-" + std::string(half.name());
+    const auto near = [](const std::vector<double>& got, const std::vector<double>& expected) {
+        bool ok = got.size() == expected.size();
+        for (std::size_t i = 0; ok && i < got.size(); ++i) {
+            ok = std::fabs(got[i] - expected[i]) <= 1e-15 * std::max(1.0, std::fabs(expected[i]));
+        }
+        return ok;
+    };
+
+    // Round trips through CIE models and RGB, within the space.
+    for (const char* model : {"CIE XYZ double", "CIE Lab double", "CIE xyY double"}) {
+        const auto back = convert<double>(model, ("Y double" + in_two).c_str(),
+                                          convert<double>(("Y double" + in_two).c_str(), model, std::vector<double>{0.5, 0.125}));
+        CR_CHECK(near(back, {0.5, 0.125}));
+    }
+    const auto gray = convert<double>(("RGB double" + in_two).c_str(), ("Y double" + in_two).c_str(),
+                                      std::vector<double>{0.5, 0.5, 0.5, 0.2, 0.6, 0.9});
+    CR_CHECK(gray.size() == 2 && std::fabs(gray[0] - 0.5) <= 1e-15);
+    const auto rgb = convert<double>(("Y double" + in_two).c_str(), ("RGB double" + in_two).c_str(), gray);
+    CR_CHECK(near(std::vector<double>(rgb.begin(), rgb.begin() + 3), {0.5, 0.5, 0.5}));
+    // The second pixel's gray has the color's luminance: R = G = B = gray has it too.
+    const auto y_of_color = convert<double>(("RGB double" + in_two).c_str(), "CIE XYZ double", std::vector<double>{0.2, 0.6, 0.9});
+    const auto y_of_gray = convert<double>(("Y double" + in_two).c_str(), "CIE XYZ double", std::vector<double>{gray[1]});
+    CR_CHECK(std::fabs(y_of_color[1] - y_of_gray[1]) <= 1e-15);
+
+    // Within one matrix a gray keeps its value; between matrices it keeps its
+    // luminance: 0.5 at luminance 2 per unit is 2 at luminance 0.5 per unit.
+    const auto same = convert<double>(("Y double" + in_two).c_str(), ("YA double" + in_two).c_str(), std::vector<double>{0.5});
+    CR_CHECK((same == std::vector<double>{0.5, 1.0}));
+    const auto across = convert<double>(("Y double" + in_two).c_str(), ("Y double" + in_half).c_str(), std::vector<double>{0.5});
+    CR_CHECK(near(across, {2.0}));
+    const auto from_srgb = convert<double>("Y double", ("Y double" + in_half).c_str(), std::vector<double>{0.25});
+    CR_CHECK(near(from_srgb, {0.5}));
+
+    // Direct conversions equal the ones staged through the destination model in
+    // double, also with an encoded (sRGB) destination.
+    std::vector<std::uint8_t> codes;
+    for (int c = 0; c < 256; ++c) {
+        codes.insert(codes.end(), {static_cast<std::uint8_t>(c), static_cast<std::uint8_t>(255 - c), static_cast<std::uint8_t>(c / 2)});
+    }
+    int differ = 0;
+    for (const std::string& source : {"R'G'B' u8" + in_half, std::string("R'G'B' u8"), "R'G'B' u8" + in_two}) {
+        for (const std::string& target : {"Y' u8" + in_half, "Y' u16" + in_half, "Y u8" + in_two}) {
+            const std::string staging = target.substr(0, target.find(' ')) == "Y'" ? "Y' double" + in_half : "Y double" + in_two;
+            const auto direct = convert<std::uint8_t>(source.c_str(), target.c_str(), codes);
+            const auto staged = convert<std::uint8_t>(staging.c_str(), target.c_str(),
+                                                      convert<double>(source.c_str(), staging.c_str(), codes));
+            differ += direct != staged;
+        }
+    }
+    CR_CHECK(differ == 0);
+
+    // With a Y-row sum of 0 a luminance cannot determine the gray value: values
+    // computed into such a space are NaN.
+    const chromaroute::Matrix3 no_gray{{{1, 0, 0}, {1, -1, 0}, {0, 0, 1}}};
+    const ColorSpace none = *ColorSpace::fromRgbToXyz("y-sum-0", {1, 1, 1}, no_gray, linear, linear, linear);
+    const std::string in_none = "-" + std::string(none.name());
+    const auto undefined = convert<double>(("RGB double" + in_none).c_str(), ("Y double" + in_none).c_str(), std::vector<double>{0.3, 0.2, 0.1});
+    CR_CHECK(undefined.size() == 1 && std::isnan(undefined[0]));
+    const auto kept = convert<double>(("Y double" + in_none).c_str(), ("YA double" + in_none).c_str(), std::vector<double>{0.4});
+    CR_CHECK((kept == std::vector<double>{0.4, 1.0}));
 }

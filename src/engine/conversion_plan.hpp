@@ -61,6 +61,8 @@ public:
         bool luminance;    // RGB -> gray with the source space's weights
         Vector3 weights;
         bool take_y;       // XYZ -> gray: Y itself
+        bool divide_luminance;    // to gray in a matrix space: luminance / luminance of R = G = B = 1 (N11)
+        double luminance_divisor; // that unit luminance (NaN when it is 0)
         bool neutral_to_cie; // RGB or gray -> CIE: neutral pixels skip the matrix (N7, N8)
         bool binary32_hue; // LCH stored as binary32: the hue rules hold for the stored values
         Trcs encode;

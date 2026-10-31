@@ -1,8 +1,8 @@
 // Entry point of the packaged UWP test app (console subsystem, AppContainer).
 //
-// A packaged app's stdout does not reach the launching shell, so results are
-// written to a report file in the package's temp folder and the exit code
-// carries pass/fail. run_uwp_test_package.ps1 registers the package, launches
+// In the tested launch setup a packaged app's stdout was not captured reliably,
+// so results are written to a report file in the package's temp folder and the
+// exit code carries pass/fail. run_uwp_test_package.ps1 registers the package, launches
 // it through its execution alias and reads the report back.
 //
 // Exit codes: 0 = all passed, 1 = test or platform failure, 2 = harness error.

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <utility>
@@ -288,6 +289,15 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     steps.luminance = (from_rgb || (gray_as_rgb && !same_matrix)) && to_gray;
     steps.weights = from_space.luminance();
     steps.take_y = from_cie && to_gray;
+    // A gray value is R = G = B in its own space (N11): a luminance (XYZ Y)
+    // divided by the luminance of R = G = B = 1, which is exactly 1 in a space
+    // derived from chromaticities and the Y-row sum in a matrix space. With a sum
+    // of 0 a luminance cannot determine the gray value (NaN). Gray to gray within
+    // one matrix keeps its value.
+    steps.divide_luminance = to_gray && to_space.from_matrix && !(from_gray && same_matrix);
+    const Vector3& y_row = to_space.luminance();
+    const double unit_luminance = y_row[0] + y_row[1] + y_row[2];
+    steps.luminance_divisor = unit_luminance != 0.0 ? unit_luminance : std::numeric_limits<double>::quiet_NaN();
     steps.neutral_to_cie = !from_cie && to_cie && !from_space.from_matrix;
     // LCH formats store every component in one type. Rounding to binary32 can
     // take a hue just below 360 to 360, or a chroma to 0, so the hue rules are
@@ -308,7 +318,7 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     for (std::size_t c = 0; c < to.colorCount(); ++c) {
         same_trcs = same_trcs && trcOf(from, from_space, from_rgb ? c : 0) == trcOf(to, to_space, c);
     }
-    const bool stay_encoded = same_trcs && !steps.apply_matrix && !steps.luminance;
+    const bool stay_encoded = same_trcs && !steps.apply_matrix && !steps.luminance && !steps.divide_luminance;
     const bool type_only = &from == &to && &from_space == &to_space;
     bool any_clamp = false;
     for (std::size_t c = 0; c < 3; ++c) {
@@ -419,6 +429,9 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         Vector3 v{};
         if (out_colors == 1) {
             v[0] = steps_.luminance ? (w[0] * c[0] + w[1] * c[1] + w[2] * c[2]) : (steps_.take_y ? c[1] : c[0]);
+            if (steps_.divide_luminance) {
+                v[0] /= steps_.luminance_divisor;
+            }
         } else if (steps_.apply_matrix && !neutral) {
             for (std::size_t r = 0; r < 3; ++r) {
                 v[r] = m[r][0] * c[0] + m[r][1] * c[1] + m[r][2] * c[2];
