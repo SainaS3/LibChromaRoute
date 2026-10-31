@@ -115,6 +115,37 @@ constexpr ModelDescriptor hue_models[] = {
     colorModel("HCYA", ColorFamily::hcy, Encoding::perceptual, hue, hcy_chroma, hcy_luma, true),
 };
 
+// Naive CMYK (S5), with the reference catalogue's names and components: inks
+// (1 = full ink) in CMYK, CMYKA and the associated CaMaYaKaA (whose third band
+// is "Yea", not the gray model's "Ya"), and the inverted cmyk, cmykA and
+// camayakaA (1 = no ink).
+constexpr ComponentDescriptor ink_c{"Cyan"}, ink_m{"Magenta"}, ink_y{"Yellow"}, ink_k{"Key"}, ink_ca{"Ca"},
+    ink_ma{"Ma"}, ink_yea{"Yea"}, ink_ka{"Ka"}, inv_c{"cyan"}, inv_m{"magenta"}, inv_y{"yellow"}, inv_k{"key"},
+    inv_ca{"ca"}, inv_ma{"ma"}, inv_ya{"ya"}, inv_ka{"ka"};
+
+constexpr ModelDescriptor cmykModel(std::string_view name, ColorFamily family, const ComponentDescriptor& c,
+                                    const ComponentDescriptor& m, const ComponentDescriptor& y,
+                                    const ComponentDescriptor& k, Alpha alpha)
+{
+    const bool has_alpha = alpha != Alpha::none;
+    return {name,
+            family,
+            Encoding::none,
+            alpha,
+            4,
+            has_alpha ? std::size_t{5} : std::size_t{4},
+            {&c, &m, &y, &k, has_alpha ? &component_alpha : nullptr}};
+}
+
+constexpr ModelDescriptor cmyk_models[] = {
+    cmykModel("CMYK", ColorFamily::cmyk, ink_c, ink_m, ink_y, ink_k, Alpha::none),
+    cmykModel("CMYKA", ColorFamily::cmyk, ink_c, ink_m, ink_y, ink_k, Alpha::straight),
+    cmykModel("CaMaYaKaA", ColorFamily::cmyk, ink_ca, ink_ma, ink_yea, ink_ka, Alpha::associated),
+    cmykModel("cmyk", ColorFamily::cmyk_inverted, inv_c, inv_m, inv_y, inv_k, Alpha::none),
+    cmykModel("cmykA", ColorFamily::cmyk_inverted, inv_c, inv_m, inv_y, inv_k, Alpha::straight),
+    cmykModel("camayakaA", ColorFamily::cmyk_inverted, inv_ca, inv_ma, inv_ya, inv_ka, Alpha::associated),
+};
+
 // Lab encodings of ICC.1 (v4): L 0..100 and a, b -128..127 over the full code range.
 constexpr TypeDescriptor cie_u8_l{"CIE u8 L", ComponentType::u8, 1, 0.0, 100.0};
 constexpr TypeDescriptor cie_u8_ab{"CIE u8 ab", ComponentType::u8, 1, -128.0, 127.0};
@@ -377,11 +408,12 @@ Registry::Registry()
     addSpace("ACES2065-1", {aces_x, aces_y, 0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.0770}, all(linear));
 
     // Every RGB and gray model in every type; every CIE, Oklab, Y'CbCr, HSL,
-    // HSV and HCY model in float and double; plus the formats with their own
-    // layout. All in sRGB.
+    // HSV and HCY model in float and double; every CMYK model in every type,
+    // except u32 for the two associated ones (as in the reference catalogue);
+    // plus the formats with their own layout. All in sRGB.
     constexpr std::size_t count = std::size(models) * std::size(types) + std::size(cie_models) * 2 +
                                   std::size(oklab_ycbcr_models) * 2 + std::size(hue_models) * 2 +
-                                  std::size(layout_formats);
+                                  std::size(cmyk_models) * std::size(types) - 2 + std::size(layout_formats);
     base_names.reserve(count); // never reallocates: formats keep views into it
     base_formats.reserve(count);
     const auto add = [&](std::string name, const ModelDescriptor& m, const TypeDescriptor& t) {
@@ -408,6 +440,13 @@ Registry::Registry()
     for (const ModelDescriptor& m : hue_models) {
         for (const TypeDescriptor* t : {&types[4], &types[5]}) {
             add(std::string(m.name) + " " + std::string(t->name), m, *t);
+        }
+    }
+    for (const ModelDescriptor& m : cmyk_models) {
+        for (const TypeDescriptor& t : types) {
+            if (!(m.associated() && t.type == ComponentType::u32)) {
+                add(std::string(m.name) + " " + std::string(t.name), m, t);
+            }
         }
     }
     for (const LayoutFormat& special : layout_formats) {

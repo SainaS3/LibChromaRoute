@@ -1264,8 +1264,161 @@ def write_hue_oracle(path: str) -> None:
     print(f"HSL, HSV and HCY oracle: skipped {skipped} cases")
 
 
+# ---- Naive CMYK (decision S5): exact rationals on linear scRGB -----------------
+
+def inverted_cmyk(rgb):
+    """(R / w, G / w, B / w, w) with w = max(R, G, B) > 0, else (R, G, B, 0)."""
+    w = max(rgb)
+    if w <= 0:
+        return [rgb[0], rgb[1], rgb[2], Fraction(0)]
+    return [rgb[0] / w, rgb[1] / w, rgb[2] / w, w]
+
+
+def cmyk_bits_or_skip(values, magnitudes):
+    """Binary32 bits, or None within 2^-40 * magnitude of a midpoint or of a
+    nonzero value's sign change; an exact 0 is compared."""
+    bits = []
+    for value, magnitude in zip(values, magnitudes):
+        value = Fraction(value)
+        if value != 0 and abs(value) <= Fraction(magnitude) * Fraction(1, 2**40):
+            return None
+        b = nearest_f32_or_skip(value, True, Fraction(magnitude))
+        if b is None:
+            return None
+        bits.append(b)
+    return bits
+
+
+def write_cmyk_oracle(path: str) -> None:
+    srgb = rgb_to_xyz_d50(BUILTIN_SPACES[0][1])
+    srgb_inverse = inverse3(srgb)
+    prophoto = rgb_to_xyz_d50(BUILTIN_SPACES[5][1])
+    prophoto_inverse = inverse3(prophoto)
+    prophoto_to_scrgb = matmul(srgb_inverse, prophoto)
+    scrgb_to_prophoto = matmul(prophoto_inverse, srgb)
+    rng = Lcg(0xC3E7)
+    skipped = 0
+
+    def unit() -> float:
+        return struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] - 1.0
+
+    def to_f32(x: float) -> float:
+        return struct.unpack("<f", struct.pack("<f", x))[0]
+
+    def random_codes(count, extra):
+        cases = list(extra)
+        while len(cases) < count:
+            r = rng.next()
+            cases.append((r & 0xFF, (r >> 8) & 0xFF, (r >> 16) & 0xFF))
+        return cases
+
+    corners = [(255, 255, 255), (0, 0, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255),
+               (255, 0, 255), (128, 128, 128), (1, 0, 0), (1, 1, 1), (254, 1, 0)]
+
+    # Linear scRGB -> CMYK float (inks) and cmyk float (inverted), with the
+    # magnitudes of the terms behind each value for the skip windows.
+    def forward(linear, through_matrix=False):
+        nonlocal skipped
+        # Through a matrix, channels that tie for the largest (white, grays)
+        # come out a few ulps apart, so their inks of exactly 0 become residues
+        # near 2^-52: too close to call. The unique largest channel's ink is
+        # computed as exactly 0 (R / w with R = w).
+        w = max(linear)
+        if through_matrix and w != 0 and sum(1 for c in linear if c == w) > 1:
+            skipped += 1
+            return None
+        inverted = inverted_cmyk(linear)
+        size = max(abs(c) for c in linear)
+        ratio_mag = [abs(v) * 8 + (size / max(linear) if max(linear) > 0 else 1) for v in inverted[:3]] + [abs(inverted[3]) + size]
+        inv_bits = cmyk_bits_or_skip(inverted, ratio_mag)
+        ink_bits = cmyk_bits_or_skip([1 - v for v in inverted], [1 + m for m in ratio_mag])
+        codes = [quantize_or_skip(1 - v, 255) for v in inverted]
+        if inv_bits is None or ink_bits is None or None in codes:
+            skipped += 1
+            return None
+        return ink_bits, inv_bits, codes
+
+    def u8_cases(decode, to_scrgb, count):
+        inputs, inks, inverted, codes = [], [], [], []
+        for rgb in random_codes(count, corners):
+            linear = [decode(c) for c in rgb]
+            if to_scrgb is not None:
+                linear = matvec(to_scrgb, linear)
+            out = forward(linear, to_scrgb is not None)
+            if out is None:
+                continue
+            inputs.append(rgb[0] | rgb[1] << 8 | rgb[2] << 16)
+            inks.extend(out[0])
+            inverted.extend(out[1])
+            codes.extend(out[2])
+        return inputs, inks, inverted, codes
+
+    srgb_decode = lambda c: srgb_to_linear(Fraction(c, 255))[0]
+    prophoto_decode = lambda c: gamma_pow(Fraction(c, 255), Fraction(18, 10))[0]
+    srgb_in, srgb_ink, srgb_inv, srgb_codes = u8_cases(srgb_decode, None, 1024)
+    pro_in, pro_ink, _, _ = u8_cases(prophoto_decode, prophoto_to_scrgb, 256)
+
+    # Linear sRGB float, including values outside [0, 1].
+    linear_in, linear_ink, linear_inv = [], [], []
+    while len(linear_in) < 512 * 3:
+        rgb = [to_f32(1.5 * unit() - 0.25) for _ in range(3)]
+        out = forward([Fraction(c) for c in rgb])
+        if out is None:
+            continue
+        linear_in.extend(f32_bits(c) for c in rgb)
+        linear_ink.extend(out[0])
+        linear_inv.extend(out[1])
+
+    # CMYK float (inks) -> R'G'B' u8 and linear RGB float (sRGB), and
+    # R'G'B' u8-ProPhoto through scRGB.
+    inverse_in, inverse_srgb_u8, inverse_linear, inverse_pro_u8 = [], [], [], []
+    while len(inverse_in) < 1024 * 4:
+        inks32 = [to_f32(unit()) for _ in range(4)]
+        if len(inverse_in) < 4 * 4:
+            inks32[3] = 1.0  # rich black: any inks with K = 1 are black
+        inverted = [1 - Fraction(v) for v in inks32]
+        linear = [inverted[i] * inverted[3] for i in range(3)]
+        srgb_codes8 = [quantize_or_skip(linear_to_srgb(c)[0], 255) for c in linear]
+        floats = cmyk_bits_or_skip(linear, [abs(c) * 4 + Fraction(1, 2**30) for c in linear])
+        pro_linear = matvec(scrgb_to_prophoto, linear)
+        pro_codes = [quantize_or_skip(gamma_pow(c, Fraction(10, 18))[0], 255) for c in pro_linear]
+        if None in srgb_codes8 or floats is None or None in pro_codes:
+            skipped += 1
+            continue
+        inverse_in.extend(f32_bits(v) for v in inks32)
+        inverse_srgb_u8.extend(srgb_codes8)
+        inverse_linear.extend(floats)
+        inverse_pro_u8.extend(pro_codes)
+
+    with open(path, "w", newline="\n") as f:
+        begin_header(f,
+                     "Generated by tools/oracle/generate_srgb_oracle.py; do not edit.\n"
+                     "Naive CMYK (decision S5) on linear RGB with sRGB primaries (scRGB) in both\n"
+                     "directions: inverted (R / w, G / w, B / w, w), w = max(R, G, B), inks 1 minus\n"
+                     "that. Exact rationals (the sRGB and gamma curves at 60 digits); binary32 bit\n"
+                     "patterns and u8 codes.\n"
+                     f"Cases skipped as too close to call: {skipped}.",
+                     ["array", "cstdint"])
+        f.write(u32_table("cmyk_srgb_u8_inputs", "R'G'B' u8 (sRGB): R | G << 8 | B << 16", srgb_in))
+        f.write(u32_table("cmyk_srgb_u8_to_cmyk_f32", "CMYK float (inks)", srgb_ink))
+        f.write(u32_table("cmyk_srgb_u8_to_inverted_f32", "cmyk float (inverted)", srgb_inv))
+        f.write(u32_table("cmyk_srgb_u8_to_cmyk_u8", "CMYK u8 (inks)", srgb_codes))
+        f.write(u32_table("cmyk_prophoto_u8_inputs", "R'G'B' u8-ProPhoto: R | G << 8 | B << 16", pro_in))
+        f.write(u32_table("cmyk_prophoto_u8_to_cmyk_f32", "CMYK float-ProPhoto (inks, through scRGB)", pro_ink))
+        f.write(u32_table("cmyk_linear_f32_inputs", "linear sRGB R, G, B (binary32 bits)", linear_in))
+        f.write(u32_table("cmyk_linear_f32_to_cmyk_f32", "CMYK float (inks)", linear_ink))
+        f.write(u32_table("cmyk_linear_f32_to_inverted_f32", "cmyk float (inverted)", linear_inv))
+        f.write(u32_table("cmyk_f32_inputs", "CMYK float C, M, Y, K (binary32 bits)", inverse_in))
+        f.write(u32_table("cmyk_f32_to_srgb_u8", "R'G'B' u8 (sRGB) components", inverse_srgb_u8))
+        f.write(u32_table("cmyk_f32_to_linear_f32", "RGB float (linear sRGB, binary32 bits)", inverse_linear))
+        f.write(u32_table("cmyk_f32_to_prophoto_u8", "R'G'B' u8-ProPhoto components", inverse_pro_u8))
+        end_header(f)
+    print(f"CMYK oracle: skipped {skipped} cases")
+
+
 def main() -> None:
     out_dir = sys.argv[1]
+    write_cmyk_oracle(f"{out_dir}/cmyk_oracle_data.hpp")
     write_hue_oracle(f"{out_dir}/hue_oracle_data.hpp")
     write_oklab_ycbcr_oracle(f"{out_dir}/oklab_ycbcr_oracle_data.hpp")
     write_cie_oracle(f"{out_dir}/cie_oracle_data.hpp")

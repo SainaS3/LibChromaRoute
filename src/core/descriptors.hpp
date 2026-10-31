@@ -63,8 +63,15 @@ struct ModelDescriptor {
         return family == ColorFamily::ycbcr || family == ColorFamily::ycbcr709 || family == ColorFamily::hsl ||
                family == ColorFamily::hsv || family == ColorFamily::hcy;
     }
-    // Everything else (CIE models, Oklab) goes through XYZ.
-    [[nodiscard]] bool rgbOrGray() const noexcept { return rgbLike() || family == ColorFamily::gray; }
+    // CMYK: four inks and, optionally, alpha, from linear RGB with sRGB
+    // primaries (scRGB) whatever the format's space (decision S5).
+    [[nodiscard]] bool cmyk() const noexcept
+    {
+        return family == ColorFamily::cmyk || family == ColorFamily::cmyk_inverted;
+    }
+    // The models on the RGB side, CMYK included; everything else (CIE models,
+    // Oklab) goes through XYZ.
+    [[nodiscard]] bool rgbOrGray() const noexcept { return rgbLike() || family == ColorFamily::gray || cmyk(); }
 };
 
 struct TrcDescriptor {

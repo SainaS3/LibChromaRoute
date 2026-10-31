@@ -39,6 +39,8 @@ enum class ColorFamily : std::uint8_t {
     hsl,      // hue, saturation, lightness from R~G~B~ of the space; hue in turns ("HSL")
     hsv,      // hue, saturation, value from R~G~B~ of the space ("HSV")
     hcy,      // hue, chroma, luma from R~G~B~ with the space's luma weights ("HCY")
+    cmyk,          // naive CMYK inks, 1 = full ink, from linear scRGB whatever the space ("CMYK")
+    cmyk_inverted, // the same with 1 = no ink ("cmyk")
 };
 
 // How color components (never alpha) are encoded.
@@ -47,7 +49,7 @@ enum class Encoding : std::uint8_t {
     space_trc,  // encoded with the color space's TRC, e.g. "R'G'B'A"
     perceptual, // encoded with the sRGB TRC whatever the space, e.g. "R~G~B~A";
                 // Y'CbCr, HSL, HSV and HCY are computed from these values
-    none,       // the model defines its values (CIE models, Oklab)
+    none,       // the model defines its values (CIE models, Oklab, CMYK)
 };
 
 enum class Alpha : std::uint8_t {
@@ -70,8 +72,8 @@ public:
     // Looks up a format by name: "<model> <type>" for sRGB, e.g. "R'G'B'A u8",
     // "CIE Lab alpha float" or "Y'CbCr709 double", or the same with "-<space>",
     // e.g. "RGBA float-Rec2020". A few names follow babl instead ("Oklab alpha
-    // float", "Y'CbCr u8"). CIE and Oklab values do not depend on the space;
-    // Y'CbCr, HSL, HSV and HCY values are relative to it.
+    // float", "Y'CbCr u8"). CIE, Oklab and CMYK values do not depend on the
+    // space; Y'CbCr, HSL, HSV and HCY values are relative to it.
     static Result<PixelFormat> fromName(std::string_view name);
 
     // The same model and type in another space ("<model> <type>-<space>",

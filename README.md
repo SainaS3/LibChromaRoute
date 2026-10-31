@@ -2,14 +2,22 @@
 
 A C++20 static library for converting pixels between formats and color spaces.
 
-- **Formats:** 134 built in, each available in every color space.
+- **Formats:** 193 built in, each available in every color space.
   - 108 RGB and gray formats: 18 models × 6 types. Models can be linear, `'` (the
     space's TRC) or `~` (the sRGB curve), with no alpha, straight alpha or associated
     alpha. Examples: `RGBA`, `R'aG'aB'aA`, `R~G~B~`, `Y'A`.
   - 26 CIE formats: `CIE XYZ`, `CIE xyY`, `CIE Yuv`, `CIE Lab` and `CIE LCH(ab)`, each
     with or without alpha, in `float` and `double`; plus `CIE Lab u8/u16` (ICC v4
     Lab encodings) and `CIE L float`.
-  - More color models follow in later milestones ([docs/model_coverage.md](docs/model_coverage.md)).
+  - 4 Oklab formats (CSS Color 4 matrices) and 9 Y′CbCr formats: `Y'CbCr` (BT.601)
+    and `Y'CbCr709`, with or without alpha, in `float` and `double`, plus `Y'CbCr u8`
+    (limited-range codes, interleaved at full resolution).
+  - 12 HSL, HSV and HCY formats: `HSL`, `HSV`, `HCY`, each with or without alpha, in
+    `float` and `double`; hue in turns.
+  - 34 naive CMYK formats: `CMYK`, `CMYKA`, `CaMaYaKaA` (inks) and the inverted
+    `cmyk`, `cmykA`, `camayakaA`, in every type (no `u32` for the associated ones);
+    babl's reference formula on linear sRGB primaries, whatever the space
+    ([docs/model_coverage.md](docs/model_coverage.md)).
 - **Types:** `u8`, `u16`, `u32`, `half`, `float`, `double`.
 - **Color spaces:** sRGB, scRGB, Rec2020, DisplayP3, Adobish, ProPhoto, Apple,
   ACEScg, ACES2065-1, plus spaces created from chromaticities or an RGB to XYZ matrix
@@ -32,13 +40,14 @@ chromaroute::Status status = converter->process(std::as_bytes(std::span(pixels))
 
 ## Not supported
 
-- ICC profiles (planned for M8), rendering intents, black-point compensation and
-  gamut mapping. Integer outputs clamp each channel on its own.
+- ICC profiles (planned for M8), including profile-based CMYK (open decision D1),
+  rendering intents, black-point compensation and gamut mapping. Integer outputs
+  clamp each channel on its own.
 - Absolute luminance and HDR transfer functions (PQ, HLG). The built-in Rec2020 uses
   the sRGB curve and ProPhoto a pure 1.8 power, as in babl, not BT.2020's OETF or
   ProPhoto's ROMM curve (open decision S6).
-- Color models other than RGB, gray and CIE: Oklab, Y′CbCr, HSL/HSV/HCY and CMYK
-  follow in M5–M7.
+- Oklch, which babl disables too, and babl's subset and packed formats
+  (`cairo-ACMK32`, `cykA u16` and the like).
 - Buffers other than tightly packed interleaved pixels: no row stride (convert one
   row at a time), planar or subsampled data, BGRA/BGR or packed formats, or in-place
   conversion.
@@ -69,8 +78,8 @@ cmake --workflow --preset msvc-uwp-arm64-release
 Individual steps: `cmake --preset msvc-uwp-x64-debug`,
 `cmake --build --preset msvc-uwp-x64-debug`, `ctest --preset msvc-uwp-x64-debug`.
 
-`msvc-host-x64-*` and `msvc-host-arm64-*` presets build a plain desktop test runner for fast iteration. They
-are for development only and are not a deliverable.
+`msvc-host-x64-*` and `msvc-host-arm64-*` presets build a plain desktop test runner
+for fast iteration. They are for development only and are not a deliverable.
 
 If the checkout is on a drive without ownership metadata (exFAT), git needs
 `git config --global --add safe.directory <path>`.
@@ -81,6 +90,7 @@ If the checkout is on a drive without ownership metadata (exFAT), git needs
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Layout, core model, conversion engine, API, numeric rules |
 | [docs/decisions.md](docs/decisions.md) | Design decisions and their status |
+| [docs/model_coverage.md](docs/model_coverage.md) | Plan for babl's color models, milestones, documented divergences from babl |
 | [docs/testing.md](docs/testing.md) | Test layers, oracles, UWP harness |
 | [docs/environment.md](docs/environment.md) | Toolchain and build findings |
 

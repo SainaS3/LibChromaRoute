@@ -17,8 +17,10 @@ namespace chromaroute::detail {
 // Oklab XYZ (normalized to the D50 white when a Lab or LCH side is involved,
 // L*a*b* between Lab and LCH); one 3x3 matrix or a luminance between hubs;
 // then the reverse on the destination side (encode, associate, R~G~B~ ->
-// Y'CbCr, HSL, HSV or HCY) and pack. Steps that cancel out are omitted;
-// identical formats copy bytes.
+// Y'CbCr, HSL, HSV or HCY) and pack. CMYK is on the RGB side, in linear scRGB
+// whatever the format's space (S5); between two CMYK models only the inks'
+// form and association change. Steps that cancel out are omitted; identical
+// formats copy bytes.
 class ConversionPlan {
 public:
     // Shared, cached plan for the pair; nullptr when the pair is unsupported.
@@ -46,6 +48,7 @@ public:
         normalized, // XYZ normalized to the D50 white, when a side is Lab or LCH
         lab,        // CIE L*a*b* (between Lab and LCH, no XYZ round trip)
         same,       // the same CIE model on both sides: values are copied
+        cmyk,       // CMYK on both sides: inks only change convention and association
     };
 
     // A model computed from R~G~B~ of its space (decision S4).
@@ -64,6 +67,8 @@ public:
         std::array<std::size_t, max_components> fill_index;
         Hub hub;
         TildeModel source_model; // to R~G~B~ first
+        bool source_cmyk;        // CMYK source: inks (un-associated, inverted) -> linear scRGB first (S5)
+        bool source_ink;         // the source stores inks (1 = full ink), not the inverted form
         bool unassociate;  // divide source colors by the used alpha
         std::array<bool, 3> clamp_encoded; // elided gamma decode + encode: values <= 0 become 0
         Trcs decode;
@@ -80,6 +85,9 @@ public:
         float full_turn;       // LCH 360, the others 1
         Trcs encode;
         TildeModel destination_model; // from R~G~B~ last
+        bool destination_cmyk;        // CMYK destination: linear scRGB -> inks (then associated) last
+        bool destination_ink;
+        bool invert_cmyk;             // Hub::cmyk between ink and inverted forms: x -> 1 - x
         bool associate;    // multiply destination colors by the used alpha
         bool nonfinite_alpha_to_nan; // kept association: colors x (used alpha / used alpha)
     };

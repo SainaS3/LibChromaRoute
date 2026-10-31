@@ -1,6 +1,7 @@
 #include "engine/conversion_plan.hpp"
 
 #include "engine/cie.hpp"
+#include "engine/cmyk.hpp"
 #include "engine/color_math.hpp"
 #include "engine/half.hpp"
 #include "engine/hue_models.hpp"
@@ -174,6 +175,13 @@ const TrcDescriptor* trcOf(const ModelDescriptor& model, const SpaceDescriptor& 
 using Hub = ConversionPlan::Hub;
 using TildeModel = ConversionPlan::TildeModel;
 
+// The RGB side of CMYK: linear RGB with sRGB primaries (S5).
+const SpaceDescriptor& scrgbSpace()
+{
+    static const SpaceDescriptor* const scrgb = findSpace("scRGB");
+    return *scrgb;
+}
+
 // A model computed from R~G~B~ (S4) in a space. HCY's luma weights are the
 // space's luminance row normalized to sum to 1 (N12): unchanged in a space
 // derived from chromaticities, whose row sums to 1 by construction; divided by
@@ -272,10 +280,13 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
 {
     const ModelDescriptor& from = *source.model;
     const ModelDescriptor& to = *destination.model;
-    const SpaceDescriptor& from_space = *source.space;
-    const SpaceDescriptor& to_space = *destination.space;
-    const bool from_rgb = from.rgbLike(); // RGB and Y'CbCr
-    const bool to_rgb = to.rgbLike();
+    // CMYK ignores the format's space: its RGB side is linear scRGB (S5).
+    const bool from_cmyk = from.cmyk();
+    const bool to_cmyk = to.cmyk();
+    const SpaceDescriptor& from_space = from_cmyk ? scrgbSpace() : *source.space;
+    const SpaceDescriptor& to_space = to_cmyk ? scrgbSpace() : *destination.space;
+    const bool from_rgb = from.rgbLike() || from_cmyk; // RGB, Y'CbCr, HSL, HSV, HCY, CMYK
+    const bool to_rgb = to.rgbLike() || to_cmyk;
     const bool to_gray = to.family == ColorFamily::gray;
     const bool from_cie = !from.rgbOrGray();
     const bool to_cie = !to.rgbOrGray();
@@ -301,6 +312,16 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
         if (!stored) {
             steps.fill_index[steps.fill_count++] = index;
         }
+    }
+    // Between two CMYK models the inks never pass through RGB, which at K = 1
+    // would lose them: within one model only the type changes; otherwise they
+    // are un-associated, change form when one side is inverted, and associated.
+    if (from_cmyk && to_cmyk) {
+        steps.hub = Hub::cmyk;
+        steps.unassociate = from.associated() && &from != &to;
+        steps.associate = to.associated() && &from != &to;
+        steps.invert_cmyk = from.family != to.family;
+        return std::make_shared<const ConversionPlan>(source, destination, steps);
     }
 
     // The hub between the models, and the linear steps between hubs (N7). In a
@@ -386,7 +407,8 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // keeps that clamp. Within one model and space only the type changes, and
     // values are kept. CIE models have no TRC.
     bool same_trcs = true;
-    for (std::size_t c = 0; c < to.colorCount(); ++c) {
+    const std::size_t to_rgb_colors = to_cmyk ? 3 : to.colorCount(); // CMYK: linear scRGB
+    for (std::size_t c = 0; c < to_rgb_colors; ++c) {
         same_trcs = same_trcs && trcOf(from, from_space, from_rgb ? c : 0) == trcOf(to, to_space, c);
     }
     const bool stay_encoded = same_trcs && !steps.apply_matrix && !steps.luminance && !steps.divide_luminance;
@@ -405,9 +427,10 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // A clamp needs straight values: the used alpha can be negative. For a
     // finite alpha, dividing and multiplying again is the identity. A NaN or
     // infinite alpha turns colors into NaN, which a model change must keep
-    // (a type-only conversion copies). CIE models have straight alpha only.
+    // (a type-only conversion copies). CIE models have straight alpha only;
+    // CMYK's inks are not linear in RGB, so it always un-associates.
     const bool any_trc = steps.decode[0] != nullptr || steps.encode[0] != nullptr || any_clamp;
-    const bool keep_association = from.associated() && to.associated() && !any_trc;
+    const bool keep_association = from.associated() && to.associated() && !any_trc && !from_cmyk && !to_cmyk;
     steps.unassociate = from.associated() && !keep_association;
     steps.associate = to.associated() && !keep_association;
     steps.nonfinite_alpha_to_nan = keep_association && !type_only;
@@ -418,6 +441,10 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     const bool copied = from.family == to.family && stay_encoded;
     steps.source_model = tildeModel(from, from_space, copied);
     steps.destination_model = tildeModel(to, to_space, copied);
+    steps.source_cmyk = from_cmyk;
+    steps.source_ink = from.family == ColorFamily::cmyk;
+    steps.destination_cmyk = to_cmyk;
+    steps.destination_ink = to.family == ColorFamily::cmyk;
     return std::make_shared<const ConversionPlan>(source, destination, steps);
 }
 
@@ -461,8 +488,10 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
     const ModelDescriptor& to = *destination_->model;
     const std::size_t in_stride = from.component_count;
     const std::size_t out_stride = to.component_count;
-    const std::size_t in_colors = from.colorCount();
+    const std::size_t in_colors = from.colorCount(); // alpha follows the colors
     const std::size_t out_colors = to.colorCount();
+    const std::size_t in_rgb = from.cmyk() ? 3 : in_colors; // colors on the RGB side
+    const std::size_t out_rgb = to.cmyk() ? 3 : out_colors;
     const bool from_rgb_or_gray = from.rgbOrGray();
     const bool to_rgb_or_gray = to.rgbOrGray();
     const Vector3& w = steps_.weights;
@@ -473,22 +502,51 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         double* dst = out + p * out_stride;
         const double alpha = from.hasAlpha() ? src[in_colors] : 1.0;
 
+        // CMYK to CMYK: un-associate, change form, associate (S5).
+        if (steps_.hub == Hub::cmyk) {
+            const double source_scale = steps_.unassociate ? usedAlpha(alpha) : 1.0;
+            const double destination_scale = steps_.associate ? usedAlpha(alpha) : 1.0;
+            for (std::size_t k = 0; k < 4; ++k) {
+                double ink = steps_.unassociate ? src[k] / source_scale : src[k];
+                if (steps_.invert_cmyk) {
+                    ink = 1.0 - ink;
+                }
+                dst[k] = steps_.associate ? ink * destination_scale : ink;
+            }
+            if (to.hasAlpha()) {
+                dst[4] = alpha;
+            }
+            continue;
+        }
+
         // Source colors to the hub.
         Vector3 c{};
         bool neutral = false;
         if (from_rgb_or_gray) {
             // Y'CbCr, HSL, HSV or HCY to R~G~B~ first; un-associate in the
-            // source's own domain, then decode.
+            // source's own domain, then decode. CMYK inks are un-associated
+            // first and give linear scRGB.
             Vector3 encoded{};
-            for (std::size_t i = 0; i < in_colors; ++i) {
-                encoded[i] = src[i];
-            }
-            if (steps_.source_model.apply) {
-                encoded = tildeRgbFrom(steps_.source_model, encoded);
-            }
             const double source_scale = steps_.unassociate ? usedAlpha(alpha) : 1.0;
-            for (std::size_t i = 0; i < in_colors; ++i) {
-                c[i] = steps_.unassociate ? encoded[i] / source_scale : encoded[i];
+            bool straight = !steps_.unassociate;
+            if (steps_.source_cmyk) {
+                InvertedCmyk inks{};
+                for (std::size_t k = 0; k < 4; ++k) {
+                    const double ink = steps_.unassociate ? src[k] / source_scale : src[k];
+                    inks[k] = steps_.source_ink ? 1.0 - ink : ink;
+                }
+                encoded = rgbFromInvertedCmyk(inks);
+                straight = true;
+            } else {
+                for (std::size_t i = 0; i < in_colors; ++i) {
+                    encoded[i] = src[i];
+                }
+                if (steps_.source_model.apply) {
+                    encoded = tildeRgbFrom(steps_.source_model, encoded);
+                }
+            }
+            for (std::size_t i = 0; i < in_rgb; ++i) {
+                c[i] = straight ? encoded[i] : encoded[i] / source_scale;
                 if (steps_.clamp_encoded[i] && c[i] <= 0.0) {
                     c[i] = 0.0; // as decode + encode would; NaN passes
                 }
@@ -536,7 +594,14 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
                 // Kept association: exactly 1 for finite alpha, NaN for NaN or +-Inf.
                 destination_scale = usedAlpha(alpha) / usedAlpha(alpha);
             }
-            for (std::size_t i = 0; i < out_colors; ++i) {
+            if (steps_.destination_cmyk) { // linear scRGB to inks, then associate
+                const InvertedCmyk inverted = invertedCmykFromRgb(v);
+                for (std::size_t k = 0; k < 4; ++k) {
+                    const double ink = steps_.destination_ink ? 1.0 - inverted[k] : inverted[k];
+                    dst[k] = steps_.associate ? ink * destination_scale : ink;
+                }
+            }
+            for (std::size_t i = 0; i < out_rgb && !steps_.destination_cmyk; ++i) {
                 dst[i] = v[i];
                 if (steps_.encode[i] != nullptr) {
                     dst[i] = fromLinear(*steps_.encode[i], dst[i]);

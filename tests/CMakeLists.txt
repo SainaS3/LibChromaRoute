@@ -2,6 +2,7 @@
 set(CHROMAROUTE_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/support/test_harness.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/cie_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/cmyk_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_math_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_semantics_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_space_tests.cpp
@@ -81,4 +82,12 @@ else()
   chromaroute_apply_compiler_options(chromaroute_hue_exhaustive_tests)
   add_test(NAME exhaustive_hue COMMAND chromaroute_hue_exhaustive_tests CONFIGURATIONS Release)
   set_tests_properties(exhaustive_hue PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
+
+  # Every linear u8 color to CMYK u8 and cmyk u8, and round trips through the
+  # CMYK models; Release only, like the tests above.
+  add_executable(chromaroute_cmyk_exhaustive_tests exhaustive/cmyk_exhaustive.cpp)
+  target_link_libraries(chromaroute_cmyk_exhaustive_tests PRIVATE ChromaRoute::chromaroute)
+  chromaroute_apply_compiler_options(chromaroute_cmyk_exhaustive_tests)
+  add_test(NAME exhaustive_cmyk COMMAND chromaroute_cmyk_exhaustive_tests CONFIGURATIONS Release)
+  set_tests_properties(exhaustive_cmyk PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
 endif()
