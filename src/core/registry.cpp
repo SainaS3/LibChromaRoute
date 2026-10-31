@@ -101,6 +101,20 @@ constexpr ModelDescriptor oklab_ycbcr_models[] = {
     colorModel("Y'CbCrA709", ColorFamily::ycbcr709, Encoding::perceptual, ycbcr_y, ycbcr_cb, ycbcr_cr, true),
 };
 
+// HSL, HSV and HCY (S4), computed from R~G~B~ like Y'CbCr, with the reference
+// catalogue's names and components.
+constexpr ComponentDescriptor hue{"hue"}, saturation{"saturation"}, lightness{"lightness"}, value{"value"},
+    hcy_chroma{"HCY chroma"}, hcy_luma{"HCY luma"};
+
+constexpr ModelDescriptor hue_models[] = {
+    colorModel("HSL", ColorFamily::hsl, Encoding::perceptual, hue, saturation, lightness, false),
+    colorModel("HSLA", ColorFamily::hsl, Encoding::perceptual, hue, saturation, lightness, true),
+    colorModel("HSV", ColorFamily::hsv, Encoding::perceptual, hue, saturation, value, false),
+    colorModel("HSVA", ColorFamily::hsv, Encoding::perceptual, hue, saturation, value, true),
+    colorModel("HCY", ColorFamily::hcy, Encoding::perceptual, hue, hcy_chroma, hcy_luma, false),
+    colorModel("HCYA", ColorFamily::hcy, Encoding::perceptual, hue, hcy_chroma, hcy_luma, true),
+};
+
 // Lab encodings of ICC.1 (v4): L 0..100 and a, b -128..127 over the full code range.
 constexpr TypeDescriptor cie_u8_l{"CIE u8 L", ComponentType::u8, 1, 0.0, 100.0};
 constexpr TypeDescriptor cie_u8_ab{"CIE u8 ab", ComponentType::u8, 1, -128.0, 127.0};
@@ -362,11 +376,12 @@ Registry::Registry()
     addSpace("ACEScg", {aces_x, aces_y, 0.713, 0.293, 0.165, 0.830, 0.128, 0.044}, all(linear));
     addSpace("ACES2065-1", {aces_x, aces_y, 0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.0770}, all(linear));
 
-    // Every RGB and gray model in every type; every CIE, Oklab and Y'CbCr
-    // model in float and double; plus the formats with their own layout. All
-    // in sRGB.
+    // Every RGB and gray model in every type; every CIE, Oklab, Y'CbCr, HSL,
+    // HSV and HCY model in float and double; plus the formats with their own
+    // layout. All in sRGB.
     constexpr std::size_t count = std::size(models) * std::size(types) + std::size(cie_models) * 2 +
-                                  std::size(oklab_ycbcr_models) * 2 + std::size(layout_formats);
+                                  std::size(oklab_ycbcr_models) * 2 + std::size(hue_models) * 2 +
+                                  std::size(layout_formats);
     base_names.reserve(count); // never reallocates: formats keep views into it
     base_formats.reserve(count);
     const auto add = [&](std::string name, const ModelDescriptor& m, const TypeDescriptor& t) {
@@ -388,6 +403,11 @@ Registry::Registry()
             // The reference catalogue names OklabA's float format "Oklab alpha float".
             const bool babl_name = m.name == "OklabA" && t == &types[4];
             add(babl_name ? std::string("Oklab alpha float") : std::string(m.name) + " " + std::string(t->name), m, *t);
+        }
+    }
+    for (const ModelDescriptor& m : hue_models) {
+        for (const TypeDescriptor* t : {&types[4], &types[5]}) {
+            add(std::string(m.name) + " " + std::string(t->name), m, *t);
         }
     }
     for (const LayoutFormat& special : layout_formats) {

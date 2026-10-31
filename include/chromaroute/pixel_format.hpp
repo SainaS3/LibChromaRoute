@@ -36,6 +36,9 @@ enum class ColorFamily : std::uint8_t {
     oklab,   // Oklab: L, a, b from D65 XYZ with the CSS Color 4 matrices ("Oklab")
     ycbcr,   // Y'CbCr with BT.601 luma weights, from R~G~B~ of the space ("Y'CbCr")
     ycbcr709, // Y'CbCr with BT.709 luma weights ("Y'CbCr709")
+    hsl,      // hue, saturation, lightness from R~G~B~ of the space; hue in turns ("HSL")
+    hsv,      // hue, saturation, value from R~G~B~ of the space ("HSV")
+    hcy,      // hue, chroma, luma from R~G~B~ with the space's luma weights ("HCY")
 };
 
 // How color components (never alpha) are encoded.
@@ -43,7 +46,7 @@ enum class Encoding : std::uint8_t {
     linear,     // linear light, e.g. "RGBA"
     space_trc,  // encoded with the color space's TRC, e.g. "R'G'B'A"
     perceptual, // encoded with the sRGB TRC whatever the space, e.g. "R~G~B~A";
-                // Y'CbCr is computed from these values
+                // Y'CbCr, HSL, HSV and HCY are computed from these values
     none,       // the model defines its values (CIE models, Oklab)
 };
 
@@ -68,7 +71,7 @@ public:
     // "CIE Lab alpha float" or "Y'CbCr709 double", or the same with "-<space>",
     // e.g. "RGBA float-Rec2020". A few names follow babl instead ("Oklab alpha
     // float", "Y'CbCr u8"). CIE and Oklab values do not depend on the space;
-    // Y'CbCr values are relative to it.
+    // Y'CbCr, HSL, HSV and HCY values are relative to it.
     static Result<PixelFormat> fromName(std::string_view name);
 
     // The same model and type in another space ("<model> <type>-<space>",

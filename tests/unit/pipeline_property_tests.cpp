@@ -1,4 +1,4 @@
-// Properties over every pair of the 147 built-in formats: converting directly equals
+// Properties over every pair of the 159 built-in formats: converting directly equals
 // converting to the destination model in double first, within the sRGB space and
 // between two other spaces; every format round trips through its own model in
 // double. These compare two routes through one engine; the values themselves are
@@ -153,19 +153,23 @@ CR_TEST(all_formats_have_consistent_metadata)
         using chromaroute::ColorFamily;
         const ColorFamily family = p.colorFamily();
         const bool gray = family == ColorFamily::gray;
-        const bool ycbcr = family == ColorFamily::ycbcr || family == ColorFamily::ycbcr709;
-        const bool xyz_based = !f.model->rgbOrGray(); // CIE models and Oklab
+        const bool from_tilde = f.model->fromTildeRgb(); // Y'CbCr, HSL, HSV, HCY
+        const bool xyz_based = !f.model->rgbOrGray();    // CIE models and Oklab
         const bool cie_name = f.model->name.starts_with("CIE ");
         const std::string_view name = f.model->name;
         const std::size_t expected_components = (gray ? 1 : 3) + (p.hasAlpha() ? 1 : 0);
         problems += p.componentCount() != expected_components;
         problems += p.bytesPerPixel() != expected_components * f.uniform_type->size;
         problems += (p.encoding() == chromaroute::Encoding::space_trc) !=
-                    (!ycbcr && name.find('\'') != std::string_view::npos);
-        problems += (p.encoding() == chromaroute::Encoding::perceptual) != (ycbcr || name.find('~') != std::string_view::npos);
+                    (!from_tilde && name.find('\'') != std::string_view::npos);
+        problems += (p.encoding() == chromaroute::Encoding::perceptual) !=
+                    (from_tilde || name.find('~') != std::string_view::npos);
+        problems += from_tilde != (family == ColorFamily::ycbcr || family == ColorFamily::ycbcr709 ||
+                                   family == ColorFamily::hsl || family == ColorFamily::hsv ||
+                                   family == ColorFamily::hcy);
         problems += (p.encoding() == chromaroute::Encoding::none) != xyz_based;
         problems += p.hasAlpha() != (cie_name ? name.ends_with(" alpha") : name.find('A') != std::string_view::npos);
     }
-    CR_CHECK(chromaroute::detail::builtinFormats().size() == 108 + 26 + 13);
+    CR_CHECK(chromaroute::detail::builtinFormats().size() == 108 + 26 + 13 + 12);
     CR_CHECK(problems == 0);
 }

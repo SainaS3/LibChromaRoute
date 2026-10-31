@@ -63,7 +63,7 @@ CR_TEST(unknown_names_are_errors)
     for (const char* name : {"", "RGBA", "rgba float", "R'G'B'A u8 ", "RGBA u15", "R u8", "CIE Lab half", "CIE XYZ u8",
                              "CIE L u8", "CIE Lab", "RGBA float-", "RGBA float-NoSuchSpace", "-sRGB", "OklabA float",
                              "Oklab alpha double", "Oklab u8", "Y'CbCr half", "Y'CbCrA u8", "Y'CbCr709 u8",
-                             "Y'CbCr u8-luma"}) {
+                             "Y'CbCr u8-luma", "HSL u8", "HSVA u16", "HCY half", "HSLA float-HSL"}) {
         const auto format = PixelFormat::fromName(name);
         CR_CHECK(!format.has_value());
         if (!format.has_value()) {
@@ -89,7 +89,7 @@ CR_TEST(builtin_names_follow_model_type_grammar)
         CR_CHECK(format.space->name == "sRGB");
     }
     CR_CHECK(layouts == 7);
-    CR_CHECK(chromaroute::detail::builtinFormats().size() == 108 + 26 + 13);
+    CR_CHECK(chromaroute::detail::builtinFormats().size() == 108 + 26 + 13 + 12);
 }
 
 CR_TEST(cie_formats_have_their_catalogue_layouts)

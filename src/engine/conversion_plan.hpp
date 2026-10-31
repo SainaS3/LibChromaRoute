@@ -9,17 +9,16 @@
 
 namespace chromaroute::detail {
 
-struct YcbcrCoefficients;
-
 // Immutable recipe for converting one format to another (docs/architecture.md,
 // Conversion engine). Per pixel: unpack each stored component to double in
 // model order (missing ones read as 0, alpha as 1); bring the colors to the
-// hub: linear RGB of the source space (Y'CbCr -> R~G~B~, un-associate alpha,
-// decode the TRCs, gray -> RGB), or for CIE models and Oklab XYZ (normalized
-// to the D50 white when a Lab or LCH side is involved, L*a*b* between Lab and
-// LCH); one 3x3 matrix or a luminance between hubs; then the reverse on the
-// destination side (encode, associate, R~G~B~ -> Y'CbCr) and pack. Steps that
-// cancel out are omitted; identical formats copy bytes.
+// hub: linear RGB of the source space (Y'CbCr, HSL, HSV or HCY -> R~G~B~,
+// un-associate alpha, decode the TRCs, gray -> RGB), or for CIE models and
+// Oklab XYZ (normalized to the D50 white when a Lab or LCH side is involved,
+// L*a*b* between Lab and LCH); one 3x3 matrix or a luminance between hubs;
+// then the reverse on the destination side (encode, associate, R~G~B~ ->
+// Y'CbCr, HSL, HSV or HCY) and pack. Steps that cancel out are omitted;
+// identical formats copy bytes.
 class ConversionPlan {
 public:
     // Shared, cached plan for the pair; nullptr when the pair is unsupported.
@@ -49,13 +48,22 @@ public:
         same,       // the same CIE model on both sides: values are copied
     };
 
+    // A model computed from R~G~B~ of its space (decision S4).
+    struct TildeModel {
+        bool apply;         // Y'CbCr, HSL, HSV or HCY, unless the values are copied
+        ColorFamily family;
+        double luma_red;    // HCY: the space's normalized luma weights (N12)
+        double luma_green;
+        double luma_blue;
+    };
+
     struct Steps {
         std::array<UnpackFunction, max_components> unpack; // per stored source component
         std::array<PackFunction, max_components> pack;     // per stored destination component
         std::size_t fill_count;                             // model components the source does not store
         std::array<std::size_t, max_components> fill_index;
         Hub hub;
-        const YcbcrCoefficients* source_ycbcr; // Y'CbCr source: to R~G~B~ first; nullptr otherwise
+        TildeModel source_model; // to R~G~B~ first
         bool unassociate;  // divide source colors by the used alpha
         std::array<bool, 3> clamp_encoded; // elided gamma decode + encode: values <= 0 become 0
         Trcs decode;
@@ -67,9 +75,11 @@ public:
         bool divide_luminance;    // to gray in a matrix space: luminance / luminance of R = G = B = 1 (N11)
         double luminance_divisor; // that unit luminance (NaN when it is 0)
         bool neutral_to_cie; // RGB or gray -> CIE: neutral pixels skip the matrix (N7, N8)
-        bool binary32_hue; // LCH stored as binary32: the hue rules hold for the stored values
+        bool binary32_hue; // LCH, HSL, HSV or HCY stored as binary32: the hue rules hold for the stored values
+        std::size_t hue_index; // LCH 2, the others 0; chroma or saturation is always 1
+        float full_turn;       // LCH 360, the others 1
         Trcs encode;
-        const YcbcrCoefficients* destination_ycbcr; // Y'CbCr destination: from R~G~B~ last
+        TildeModel destination_model; // from R~G~B~ last
         bool associate;    // multiply destination colors by the used alpha
         bool nonfinite_alpha_to_nan; // kept association: colors x (used alpha / used alpha)
     };

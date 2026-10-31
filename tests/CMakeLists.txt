@@ -8,6 +8,7 @@ set(CHROMAROUTE_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/concurrency_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/converter_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/half_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/hue_model_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/model_conversion_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/numeric_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/oklab_ycbcr_tests.cpp
@@ -72,4 +73,12 @@ else()
   chromaroute_apply_compiler_options(chromaroute_ycbcr_exhaustive_tests)
   add_test(NAME exhaustive_ycbcr COMMAND chromaroute_ycbcr_exhaustive_tests CONFIGURATIONS Release)
   set_tests_properties(exhaustive_ycbcr PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
+
+  # Every R'G'B' u8 color to HSL, HSV and HCY float, and round trips through
+  # each in float and double; Release only, like the tests above.
+  add_executable(chromaroute_hue_exhaustive_tests exhaustive/hue_exhaustive.cpp)
+  target_link_libraries(chromaroute_hue_exhaustive_tests PRIVATE ChromaRoute::chromaroute)
+  chromaroute_apply_compiler_options(chromaroute_hue_exhaustive_tests)
+  add_test(NAME exhaustive_hue COMMAND chromaroute_hue_exhaustive_tests CONFIGURATIONS Release)
+  set_tests_properties(exhaustive_hue PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
 endif()

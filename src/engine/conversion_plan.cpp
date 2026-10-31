@@ -3,6 +3,7 @@
 #include "engine/cie.hpp"
 #include "engine/color_math.hpp"
 #include "engine/half.hpp"
+#include "engine/hue_models.hpp"
 #include "engine/numeric.hpp"
 #include "engine/oklab.hpp"
 #include "engine/transfer.hpp"
@@ -171,6 +172,47 @@ const TrcDescriptor* trcOf(const ModelDescriptor& model, const SpaceDescriptor& 
 }
 
 using Hub = ConversionPlan::Hub;
+using TildeModel = ConversionPlan::TildeModel;
+
+// A model computed from R~G~B~ (S4) in a space. HCY's luma weights are the
+// space's luminance row normalized to sum to 1 (N12): unchanged in a space
+// derived from chromaticities, whose row sums to 1 by construction; divided by
+// the row sum in a matrix space, and NaN when that sum is 0, as for gray (N11).
+TildeModel tildeModel(const ModelDescriptor& model, const SpaceDescriptor& space, bool copied) noexcept
+{
+    TildeModel m{model.fromTildeRgb() && !copied, model.family, 0.0, 0.0, 0.0};
+    const Vector3& row = space.luminance();
+    const double sum = space.from_matrix ? row[0] + row[1] + row[2] : 1.0;
+    const double divisor = sum != 0.0 ? sum : std::numeric_limits<double>::quiet_NaN();
+    m.luma_red = row[0] / divisor;
+    m.luma_green = row[1] / divisor;
+    m.luma_blue = row[2] / divisor;
+    return m;
+}
+
+Vector3 tildeRgbFrom(const TildeModel& m, const Vector3& v) noexcept
+{
+    switch (m.family) {
+        case ColorFamily::ycbcr: return rgbFromYcbcr(v, bt601_ycbcr);
+        case ColorFamily::ycbcr709: return rgbFromYcbcr(v, bt709_ycbcr);
+        case ColorFamily::hsl: return rgbFromHsl(v);
+        case ColorFamily::hsv: return rgbFromHsv(v);
+        case ColorFamily::hcy: return rgbFromHcy(v, {m.luma_red, m.luma_green, m.luma_blue});
+        default: return v;
+    }
+}
+
+Vector3 tildeRgbTo(const TildeModel& m, const Vector3& rgb) noexcept
+{
+    switch (m.family) {
+        case ColorFamily::ycbcr: return ycbcrFromRgb(rgb, bt601_ycbcr);
+        case ColorFamily::ycbcr709: return ycbcrFromRgb(rgb, bt709_ycbcr);
+        case ColorFamily::hsl: return hslFromRgb(rgb);
+        case ColorFamily::hsv: return hsvFromRgb(rgb);
+        case ColorFamily::hcy: return hcyFromRgb(rgb, {m.luma_red, m.luma_green, m.luma_blue});
+        default: return rgb;
+    }
+}
 
 // A CIE or Oklab model's colors -> the hub.
 Vector3 cieToHub(ColorFamily family, Hub hub, const Vector3& v) noexcept
@@ -323,12 +365,17 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     const double unit_luminance = y_row[0] + y_row[1] + y_row[2];
     steps.luminance_divisor = unit_luminance != 0.0 ? unit_luminance : std::numeric_limits<double>::quiet_NaN();
     steps.neutral_to_cie = !from_cie && to_cie && !from_space.from_matrix;
-    // LCH formats store every component in one type. Rounding to binary32 can
-    // take a hue just below 360 to 360, or a chroma to 0, so the hue rules are
-    // applied again to the values as stored. That includes copies from LCH
-    // double, so a direct conversion equals one staged through LCH double.
-    steps.binary32_hue = to.family == ColorFamily::cie_lch && destination.uniform_type != nullptr &&
+    // LCH, HSL, HSV and HCY formats store every component in one type. Rounding
+    // to binary32 can take a hue just below a full turn (360 or 1) to it, or a
+    // chroma or saturation to 0, so the hue rules are applied again to the
+    // values as stored. That includes copies from double, so a direct
+    // conversion equals one staged through the model in double.
+    const bool lch = to.family == ColorFamily::cie_lch;
+    const bool hue_model = to.family == ColorFamily::hsl || to.family == ColorFamily::hsv || to.family == ColorFamily::hcy;
+    steps.binary32_hue = (lch || hue_model) && destination.uniform_type != nullptr &&
                          destination.uniform_type->type == ComponentType::f32;
+    steps.hue_index = lch ? 2 : 0;
+    steps.full_turn = lch ? 360.0f : 1.0f;
 
     // Colors stay encoded when no linear-light operation is needed and both
     // sides apply the same TRC to every channel: TRCs act per channel, so
@@ -364,17 +411,13 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     steps.unassociate = from.associated() && !keep_association;
     steps.associate = to.associated() && !keep_association;
     steps.nonfinite_alpha_to_nan = keep_association && !type_only;
-    // Y'CbCr converts from and to R~G~B~ of its space (S4). Between two formats
-    // of one Y'CbCr model whose values stay encoded the two steps cancel, so the
-    // values are copied.
-    const auto ycbcrOf = [](const ModelDescriptor& m) -> const YcbcrCoefficients* {
-        return m.family == ColorFamily::ycbcr      ? &bt601_ycbcr
-               : m.family == ColorFamily::ycbcr709 ? &bt709_ycbcr
-                                                   : nullptr;
-    };
-    const bool same_ycbcr = from.family == to.family && stay_encoded;
-    steps.source_ycbcr = same_ycbcr ? nullptr : ycbcrOf(from);
-    steps.destination_ycbcr = same_ycbcr ? nullptr : ycbcrOf(to);
+    // Y'CbCr, HSL, HSV and HCY convert from and to R~G~B~ of their space (S4).
+    // Between two formats of one such model whose values stay encoded (so the
+    // spaces share a matrix, and HCY its luma weights) the two steps cancel,
+    // so the values are copied.
+    const bool copied = from.family == to.family && stay_encoded;
+    steps.source_model = tildeModel(from, from_space, copied);
+    steps.destination_model = tildeModel(to, to_space, copied);
     return std::make_shared<const ConversionPlan>(source, destination, steps);
 }
 
@@ -434,14 +477,14 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         Vector3 c{};
         bool neutral = false;
         if (from_rgb_or_gray) {
-            // Y'CbCr to R~G~B~ first; un-associate in the source's own domain,
-            // then decode.
+            // Y'CbCr, HSL, HSV or HCY to R~G~B~ first; un-associate in the
+            // source's own domain, then decode.
             Vector3 encoded{};
             for (std::size_t i = 0; i < in_colors; ++i) {
                 encoded[i] = src[i];
             }
-            if (steps_.source_ycbcr != nullptr) {
-                encoded = rgbFromYcbcr(encoded, *steps_.source_ycbcr);
+            if (steps_.source_model.apply) {
+                encoded = tildeRgbFrom(steps_.source_model, encoded);
             }
             const double source_scale = steps_.unassociate ? usedAlpha(alpha) : 1.0;
             for (std::size_t i = 0; i < in_colors; ++i) {
@@ -502,20 +545,21 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
                     dst[i] *= destination_scale;
                 }
             }
-            if (steps_.destination_ycbcr != nullptr) { // R~G~B~ to Y'CbCr last
-                const Vector3 ycc = ycbcrFromRgb({dst[0], dst[1], dst[2]}, *steps_.destination_ycbcr);
-                dst[0] = ycc[0];
-                dst[1] = ycc[1];
-                dst[2] = ycc[2];
+            if (steps_.destination_model.apply) { // R~G~B~ to Y'CbCr, HSL, HSV or HCY last
+                const Vector3 colors = tildeRgbTo(steps_.destination_model, {dst[0], dst[1], dst[2]});
+                dst[0] = colors[0];
+                dst[1] = colors[1];
+                dst[2] = colors[2];
             }
         } else {
-            Vector3 colors = cieFromHub(to.family, steps_.hub, v);
-            if (steps_.binary32_hue && (narrowToFloat(colors[1]) == 0.0f || narrowToFloat(colors[2]) == 360.0f)) {
-                colors[2] = 0.0;
-            }
+            const Vector3 colors = cieFromHub(to.family, steps_.hub, v);
             dst[0] = colors[0];
             dst[1] = colors[1];
             dst[2] = colors[2];
+        }
+        if (steps_.binary32_hue &&
+            (narrowToFloat(dst[1]) == 0.0f || narrowToFloat(dst[steps_.hue_index]) == steps_.full_turn)) {
+            dst[steps_.hue_index] = 0.0;
         }
         if (to.hasAlpha()) {
             dst[out_colors] = alpha;

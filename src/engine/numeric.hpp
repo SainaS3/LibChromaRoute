@@ -61,7 +61,7 @@ template <typename UInt>
 // Integers mapped to the value range [lo, hi] (decision A7): codes c_lo..c_hi
 // cover it, code c meaning lo + (c - c_lo) (hi - lo) / (c_hi - c_lo). Codes
 // outside c_lo..c_hi (Y'CbCr footroom and headroom) decode to lo or hi, as in
-// babl. For integer or half-integer lo and hi, (c - c_lo) (hi - lo) +
+// babl (decision S8). For integer or half-integer lo and hi, (c - c_lo) (hi - lo) +
 // lo (c_hi - c_lo) is exact in double, so the one division rounds correctly.
 template <typename UInt>
 [[nodiscard]] inline double decodeRange(UInt code, double lo, double hi, double c_lo, double c_hi) noexcept

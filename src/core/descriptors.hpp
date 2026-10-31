@@ -25,7 +25,8 @@ struct TypeDescriptor {
     std::size_t size;      // bytes per component
     // Integer storage maps codes code_min..code_max to min..max (decision A7);
     // code_max 0 stands for the largest code of the storage. Codes outside
-    // code_min..code_max decode to min or max. Float storage ignores these.
+    // code_min..code_max decode to min or max (decision S8). Float storage
+    // ignores these.
     double min = 0.0;
     double max = 1.0;
     std::uint32_t code_min = 0;
@@ -53,12 +54,14 @@ struct ModelDescriptor {
     [[nodiscard]] std::size_t colorCount() const noexcept { return color_count; }
     [[nodiscard]] bool hasAlpha() const noexcept { return alpha != Alpha::none; }
     [[nodiscard]] bool associated() const noexcept { return alpha == Alpha::associated; }
-    // RGB and Y'CbCr: three colors in a format's space. Y'CbCr is computed from
-    // R~G~B~ of that space (decision S4), so the engine treats it as RGB with
-    // one more step on the encoded values.
-    [[nodiscard]] bool rgbLike() const noexcept
+    // RGB, Y'CbCr, HSL, HSV and HCY: three colors in a format's space. The
+    // others are computed from R~G~B~ of that space (decision S4), so the
+    // engine treats them as RGB with one more step on the encoded values.
+    [[nodiscard]] bool rgbLike() const noexcept { return family == ColorFamily::rgb || fromTildeRgb(); }
+    [[nodiscard]] bool fromTildeRgb() const noexcept
     {
-        return family == ColorFamily::rgb || family == ColorFamily::ycbcr || family == ColorFamily::ycbcr709;
+        return family == ColorFamily::ycbcr || family == ColorFamily::ycbcr709 || family == ColorFamily::hsl ||
+               family == ColorFamily::hsv || family == ColorFamily::hcy;
     }
     // Everything else (CIE models, Oklab) goes through XYZ.
     [[nodiscard]] bool rgbOrGray() const noexcept { return rgbLike() || family == ColorFamily::gray; }

@@ -115,7 +115,7 @@ CR_TEST(oklab_white_neutrals_and_round_trips)
     // With the CSS Color 4 matrices sRGB white is (1, 0, 0) to double rounding,
     // and every gray has a = b = 0 to that precision. a and b are sums of three
     // terms of up to 2.43 L (M2's entries) that cancel for a gray, so rounding
-    // leaves a residue of a few 1e-16 L; the bound is 4e-15 L, measured worst
+    // leaves a residue of order 1e-15 L; the bound is 4e-15 L, measured worst
     // 1.36e-15 L (Y = 0.73).
     const auto white = convert<double>("R'G'B' u8", "Oklab double", std::vector<std::uint8_t>{255, 255, 255});
     CR_CHECK(white.size() == 3 && std::fabs(white[0] - 1.0) < 1e-15 && std::fabs(white[1]) < 1e-15 &&

@@ -1047,8 +1047,226 @@ def write_oklab_ycbcr_oracle(path: str) -> None:
     print(f"Oklab and Y'CbCr oracle: skipped {skipped} cases")
 
 
+# ---- HSL, HSV, HCY (decision S4): exact rationals on R~G~B~ ------------------
+
+HUE_F32_ONE = 0x3F800000
+
+
+def hue_of(rgb, high, chroma):
+    """Hexagonal hue in [0, 1) of a color with chroma > 0."""
+    r, g, b = rgb
+    if high == r:
+        sextant = (g - b) / chroma
+        if sextant < 0:
+            sextant += 6
+    elif high == g:
+        sextant = 2 + (b - r) / chroma
+    else:
+        sextant = 4 + (r - g) / chroma
+    return sextant / 6
+
+
+def hue_color(hue):
+    """The most chromatic color of a hue in [0, 1): largest channel 1, smallest 0."""
+    sextant = 6 * hue
+    sector = min(int(sextant), 5)
+    f = sextant - sector
+    return [(1, f, 0), (1 - f, 1, 0), (0, 1, f), (0, 1 - f, 1), (f, 0, 1), (1, 0, 1 - f)][sector]
+
+
+def hcy_luma(rgb, weights):
+    return sum(weights[i] * rgb[i] for i in range(3))
+
+
+def hue_models_exact(rgb, weights):
+    """HSL, HSV and HCY of an R~G~B~ color with values and magnitudes for the skip
+    windows: (value, magnitude) per component, or None where a model has no
+    saturation."""
+    high, low = max(rgb), min(rgb)
+    chroma = high - low
+    size = abs(high) + abs(low)
+    y = hcy_luma(rgb, weights)
+    y_mag = sum(abs(weights[i] * rgb[i]) for i in range(3)) + size
+    lightness = (high + low) / 2
+    if chroma == 0:
+        return ([(0, 1), (0, 1), (lightness, size)], [(0, 1), (0, 1), (high, size)], [(0, 1), (0, 1), (y, y_mag)])
+    hue = hue_of(rgb, high, chroma)
+    ratio = 1 + size / chroma  # relative error growth from max - min and the differences
+    hue_mag = 1 + ratio
+    scale = high + low if high + low <= 1 else 2 - high - low
+    hsl = [(hue, hue_mag), (chroma / scale, abs(chroma / scale) * (ratio + (size + 2) / abs(scale))) if scale != 0 else None,
+           (lightness, size)]
+    hsv = [(hue, hue_mag), (chroma / high, abs(chroma / high) * (ratio + size / abs(high))) if high != 0 else None,
+           (high, size)]
+    peak = hcy_luma([(c - low) / chroma for c in rgb], weights)
+    below = y < peak
+    divisor = y if below else 1 - y
+    reference = peak if below else 1 - peak
+    if divisor != 0:
+        rel = chroma * reference / divisor
+        rel_mag = abs(rel) * (ratio + 2 + (y_mag + 1) / abs(divisor) + 2 / abs(reference))
+        hcy = [(hue, hue_mag), (rel, rel_mag), (y, y_mag)]
+    else:
+        hcy = [(hue, hue_mag), None, (y, y_mag)]
+    return hsl, hsv, hcy
+
+
+def hue_f32_or_skip(components):
+    """Binary32 bits of (hue, saturation, third) with the stored-hue rules: a hue
+    that rounds to 1 is stored as 0, and so is the hue of a saturation that
+    rounds to 0. None when a component is too close to call or undefined."""
+    if None in components:
+        return None
+    bits = []
+    for value, magnitude in components:
+        value = Fraction(value)
+        magnitude = Fraction(magnitude)
+        window = magnitude * Fraction(1, 2**40)
+        if value != 0 and abs(value) <= window:
+            return None
+        b = nearest_f32_or_skip(value, True, magnitude)
+        if b is None:
+            return None
+        bits.append(b)
+    if bits[0] == HUE_F32_ONE or (bits[1] & 0x7FFFFFFF) == 0:
+        bits[0] = 0
+    return bits
+
+
+def rgb_from_hue_model(model, values, weights):
+    """R~G~B~ of HSL, HSV or HCY values (hue in [0, 1)) and a magnitude per channel."""
+    hue, sat, third = values
+    if sat == 0:
+        return [third] * 3, abs(third) + 1
+    color = hue_color(hue)
+    if model == "hsl":
+        chroma = (2 * third if 2 * third <= 1 else 2 - 2 * third) * sat
+        low = third - chroma / 2
+    elif model == "hsv":
+        chroma = sat * third
+        low = third - chroma
+    else:
+        peak = hcy_luma(color, weights)
+        below = third < peak
+        chroma = sat * (third if below else 1 - third) / (peak if below else 1 - peak)
+        low = third - chroma * peak
+    return [low + chroma * c for c in color], abs(third) + 4 * abs(chroma) + 1
+
+
+def write_hue_oracle(path: str) -> None:
+    srgb_y = rgb_to_xyz_d50(BUILTIN_SPACES[0][1])[1]
+    prophoto = rgb_to_xyz_d50(BUILTIN_SPACES[5][1])
+    prophoto_y = prophoto[1]
+    assert sum(srgb_y) == 1 and sum(prophoto_y) == 1
+    rng = Lcg(0x45C1)
+    skipped = 0
+
+    def unit() -> float:
+        return struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] - 1.0
+
+    def to_f32(x: float) -> float:
+        return struct.unpack("<f", struct.pack("<f", x))[0]
+
+    def random_codes(count, extra):
+        cases = list(extra)
+        while len(cases) < count:
+            r = rng.next()
+            cases.append((r & 0xFF, (r >> 8) & 0xFF, (r >> 16) & 0xFF))
+        return cases
+
+    corners = [(255, 255, 255), (0, 0, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255),
+               (255, 0, 255), (128, 128, 128), (255, 0, 1), (1, 0, 0), (254, 255, 255), (10, 10, 11)]
+
+    def forward(tilde_of, codes, weights):
+        nonlocal skipped
+        inputs, out = [], [[], [], []]
+        for rgb in codes:
+            models = [hue_f32_or_skip(m) for m in hue_models_exact(tilde_of(rgb), weights)]
+            if None in models:
+                skipped += 1
+                continue
+            inputs.append(rgb[0] | rgb[1] << 8 | rgb[2] << 16)
+            for i in range(3):
+                out[i].extend(models[i])
+        return inputs, out
+
+    # R'G'B' u8 (sRGB) -> HSL, HSV, HCY float: R~ = code / 255 exactly there.
+    srgb_in, srgb_out = forward(lambda rgb: [Fraction(c, 255) for c in rgb], random_codes(1024, corners), srgb_y)
+
+    # R'G'B' u8-ProPhoto -> float-ProPhoto: decode the gamma 1.8, then the sRGB
+    # curve on ProPhoto's linear RGB (S4); HCY with ProPhoto's luma weights.
+    def prophoto_tilde(rgb):
+        return [linear_to_srgb(gamma_pow(Fraction(c, 255), Fraction(18, 10))[0])[0] for c in rgb]
+
+    pro_in, pro_out = forward(prophoto_tilde, random_codes(256, corners), prophoto_y)
+
+    # Linear sRGB float -> HSV and HCY float, including values outside [0, 1].
+    linear_in, linear_hsv, linear_hcy = [], [], []
+    while len(linear_in) < 512 * 3:
+        rgb = [to_f32(1.5 * unit() - 0.25) for _ in range(3)]
+        tilde = [linear_to_srgb(Fraction(c))[0] for c in rgb]
+        _, hsv, hcy = hue_models_exact(tilde, srgb_y)
+        hsv_bits, hcy_bits = hue_f32_or_skip(hsv), hue_f32_or_skip(hcy)
+        if hsv_bits is None or hcy_bits is None:
+            skipped += 1
+            continue
+        linear_in.extend(f32_bits(c) for c in rgb)
+        linear_hsv.extend(hsv_bits)
+        linear_hcy.extend(hcy_bits)
+
+    # HSL, HSV, HCY float -> R'G'B' u8 and R'G'B' float (sRGB).
+    def inverse(model):
+        nonlocal skipped
+        inputs, codes_out, floats_out = [], [], []
+        while len(inputs) < 512 * 3:
+            values32 = [to_f32(unit()), to_f32(unit()), to_f32(unit())]
+            if len(inputs) < 8 * 3:
+                values32[1] = 0.0 if len(inputs) < 4 * 3 else 1.0
+            rgb, magnitude = rgb_from_hue_model(model, [Fraction(v) for v in values32], srgb_y)
+            codes = [quantize_or_skip(c, 255) for c in rgb]
+            floats = [nearest_f32_or_skip(c, True, magnitude) for c in rgb]
+            if None in codes or None in floats or any(c != 0 and abs(c) <= magnitude * Fraction(1, 2**40) for c in rgb):
+                skipped += 1
+                continue
+            inputs.extend(f32_bits(v) for v in values32)
+            codes_out.extend(codes)
+            floats_out.extend(floats)
+        return inputs, codes_out, floats_out
+
+    inverse_tables = {model: inverse(model) for model in ("hsl", "hsv", "hcy")}
+
+    with open(path, "w", newline="\n") as f:
+        begin_header(f,
+                     "Generated by tools/oracle/generate_srgb_oracle.py; do not edit.\n"
+                     "HSL, HSV and HCY from the sRGB-curve encoding of the space (decision S4),\n"
+                     "hue in turns; HCY with the space's luma weights as exact rationals. Exact\n"
+                     "rationals (ProPhoto's curve at 60 digits); binary32 bit patterns and u8\n"
+                     "codes, with the stored-hue rules applied.\n"
+                     f"Cases skipped as too close to call: {skipped}.",
+                     ["array", "cstdint"])
+        f.write(u32_table("hue_srgb_u8_inputs", "R'G'B' u8 (sRGB): R | G << 8 | B << 16", srgb_in))
+        f.write(u32_table("hue_srgb_u8_to_hsl_f32", "HSL float", srgb_out[0]))
+        f.write(u32_table("hue_srgb_u8_to_hsv_f32", "HSV float", srgb_out[1]))
+        f.write(u32_table("hue_srgb_u8_to_hcy_f32", "HCY float", srgb_out[2]))
+        f.write(u32_table("hue_prophoto_u8_inputs", "R'G'B' u8-ProPhoto: R | G << 8 | B << 16", pro_in))
+        f.write(u32_table("hue_prophoto_u8_to_hsl_f32", "HSL float-ProPhoto", pro_out[0]))
+        f.write(u32_table("hue_prophoto_u8_to_hsv_f32", "HSV float-ProPhoto", pro_out[1]))
+        f.write(u32_table("hue_prophoto_u8_to_hcy_f32", "HCY float-ProPhoto", pro_out[2]))
+        f.write(u32_table("hue_linear_f32_inputs", "linear sRGB R, G, B (binary32 bits)", linear_in))
+        f.write(u32_table("hue_linear_f32_to_hsv_f32", "HSV float", linear_hsv))
+        f.write(u32_table("hue_linear_f32_to_hcy_f32", "HCY float", linear_hcy))
+        for model in ("hsl", "hsv", "hcy"):
+            inputs, codes, floats = inverse_tables[model]
+            f.write(u32_table(f"hue_{model}_f32_inputs", f"{model.upper()} float (binary32 bits)", inputs))
+            f.write(u32_table(f"hue_{model}_f32_to_srgb_u8", "R'G'B' u8 (sRGB) components", codes))
+            f.write(u32_table(f"hue_{model}_f32_to_srgb_f32", "R'G'B' float (sRGB, binary32 bits)", floats))
+        end_header(f)
+    print(f"HSL, HSV and HCY oracle: skipped {skipped} cases")
+
+
 def main() -> None:
     out_dir = sys.argv[1]
+    write_hue_oracle(f"{out_dir}/hue_oracle_data.hpp")
     write_oklab_ycbcr_oracle(f"{out_dir}/oklab_ycbcr_oracle_data.hpp")
     write_cie_oracle(f"{out_dir}/cie_oracle_data.hpp")
     write_color_semantics_oracle(f"{out_dir}/color_semantics_oracle_data.hpp")
