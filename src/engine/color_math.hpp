@@ -7,6 +7,7 @@
 #include <chromaroute/color_space.hpp>
 
 #include <array>
+#include <cmath>
 
 namespace chromaroute::detail {
 
@@ -120,6 +121,26 @@ inline constexpr Matrix3 bradford{{
         }
     }
     return multiply(chromaticAdaptation(white, icc_d50_white), to_xyz);
+}
+
+// The binary exponent of a color's largest component when it lies outside
+// [lo, hi], where a computation on it could overflow or lose precision to
+// subnormals; 0 otherwise, and for zero or non-finite colors.
+[[nodiscard]] inline int outOfRangeExponent(const Vector3& v, double lo, double hi) noexcept
+{
+    const double largest = std::fmax(std::fabs(v[0]), std::fmax(std::fabs(v[1]), std::fabs(v[2])));
+    if (!std::isfinite(largest) || largest == 0.0 || (largest >= lo && largest <= hi)) {
+        return 0;
+    }
+    int exponent = 0;
+    (void)std::frexp(largest, &exponent);
+    return exponent;
+}
+
+// v times 2^exponent, exact unless the result leaves the normal range.
+[[nodiscard]] inline Vector3 scaled(const Vector3& v, int exponent) noexcept
+{
+    return {std::ldexp(v[0], exponent), std::ldexp(v[1], exponent), std::ldexp(v[2], exponent)};
 }
 
 } // namespace chromaroute::detail

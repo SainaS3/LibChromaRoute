@@ -1,5 +1,6 @@
 // Color spaces, transfer functions and formats with space (Milestone 3).
 
+#include "support/conversion_checks.hpp"
 #include "support/test_harness.hpp"
 
 #include "data/color_semantics_oracle_data.hpp"
@@ -107,7 +108,7 @@ CR_TEST(builtin_spaces_match_exact_derivation)
             }
             for (int c = 0; c < 3; ++c) {
                 const double d = std::fabs(cs.rgbToXyz()[r][c] - oracle::space_rgb_to_xyz[s][r * 3 + c]);
-                worst = std::max(worst, d / (row * 0x1p-52));
+                worst = chromaroute::test::worstOf(worst, d / (row * 0x1p-52));
             }
         }
         const auto& y = cs.luminance();

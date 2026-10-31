@@ -10,6 +10,7 @@ set(CHROMAROUTE_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/half_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/model_conversion_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/numeric_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/oklab_ycbcr_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/pipeline_property_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/pixel_format_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/srgb_r1_tests.cpp
@@ -62,4 +63,13 @@ else()
   chromaroute_apply_compiler_options(chromaroute_cie_exhaustive_tests)
   add_test(NAME exhaustive_cie COMMAND chromaroute_cie_exhaustive_tests CONFIGURATIONS Release)
   set_tests_properties(exhaustive_cie PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
+
+  # Every R'G'B' u8 color to Y'CbCr u8, and every binary32 input of the
+  # limited-range encoders; Release only, like the tests above.
+  add_executable(chromaroute_ycbcr_exhaustive_tests exhaustive/ycbcr_exhaustive.cpp)
+  target_include_directories(chromaroute_ycbcr_exhaustive_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_link_libraries(chromaroute_ycbcr_exhaustive_tests PRIVATE ChromaRoute::chromaroute)
+  chromaroute_apply_compiler_options(chromaroute_ycbcr_exhaustive_tests)
+  add_test(NAME exhaustive_ycbcr COMMAND chromaroute_ycbcr_exhaustive_tests CONFIGURATIONS Release)
+  set_tests_properties(exhaustive_ycbcr PROPERTIES LABELS "exhaustive" TIMEOUT 1800)
 endif()

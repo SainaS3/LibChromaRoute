@@ -61,7 +61,9 @@ CR_TEST(lookups_are_interned)
 CR_TEST(unknown_names_are_errors)
 {
     for (const char* name : {"", "RGBA", "rgba float", "R'G'B'A u8 ", "RGBA u15", "R u8", "CIE Lab half", "CIE XYZ u8",
-                             "CIE L u8", "CIE Lab", "RGBA float-", "RGBA float-NoSuchSpace", "-sRGB"}) {
+                             "CIE L u8", "CIE Lab", "RGBA float-", "RGBA float-NoSuchSpace", "-sRGB", "OklabA float",
+                             "Oklab alpha double", "Oklab u8", "Y'CbCr half", "Y'CbCrA u8", "Y'CbCr709 u8",
+                             "Y'CbCr u8-luma"}) {
         const auto format = PixelFormat::fromName(name);
         CR_CHECK(!format.has_value());
         if (!format.has_value()) {
@@ -73,20 +75,21 @@ CR_TEST(unknown_names_are_errors)
 
 CR_TEST(builtin_names_follow_model_type_grammar)
 {
-    // Formats of one type are "<model> <type>"; the CIE formats with their own
-    // layout keep their catalogue names.
+    // Formats of one type are "<model> <type>", except babl's "Oklab alpha float"
+    // (OklabA in float); the formats with their own layout keep their catalogue
+    // names.
     int layouts = 0;
     for (const auto& format : chromaroute::detail::builtinFormats()) {
         if (format.uniform_type != nullptr) {
             const std::string expected = std::string(format.model->name) + " " + std::string(format.uniform_type->name);
-            CR_CHECK(format.name == expected);
+            CR_CHECK(format.name == expected || (format.name == "Oklab alpha float" && expected == "OklabA float"));
         } else {
             ++layouts;
         }
         CR_CHECK(format.space->name == "sRGB");
     }
-    CR_CHECK(layouts == 6);
-    CR_CHECK(chromaroute::detail::builtinFormats().size() == 108 + 26);
+    CR_CHECK(layouts == 7);
+    CR_CHECK(chromaroute::detail::builtinFormats().size() == 108 + 26 + 13);
 }
 
 CR_TEST(cie_formats_have_their_catalogue_layouts)

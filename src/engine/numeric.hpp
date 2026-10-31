@@ -58,15 +58,30 @@ template <typename UInt>
     return static_cast<UInt>(std::floor(value * static_cast<double>(max) + 0.5));
 }
 
-// Integers mapped to the value range [lo, hi] (decision A7): code c means
-// lo + c * (hi - lo) / max. For integer lo and hi, c * (hi - lo) + lo * max is
-// an exact integer in double, so the one division rounds correctly.
+// Integers mapped to the value range [lo, hi] (decision A7): codes c_lo..c_hi
+// cover it, code c meaning lo + (c - c_lo) (hi - lo) / (c_hi - c_lo). Codes
+// outside c_lo..c_hi (Y'CbCr footroom and headroom) decode to lo or hi, as in
+// babl. For integer or half-integer lo and hi, (c - c_lo) (hi - lo) +
+// lo (c_hi - c_lo) is exact in double, so the one division rounds correctly.
+template <typename UInt>
+[[nodiscard]] inline double decodeRange(UInt code, double lo, double hi, double c_lo, double c_hi) noexcept
+{
+    static_assert(std::is_unsigned_v<UInt>, "unsigned storage type expected");
+    if (code < c_lo) {
+        return lo;
+    }
+    if (code > c_hi) {
+        return hi;
+    }
+    const double span = c_hi - c_lo;
+    return ((code - c_lo) * (hi - lo) + lo * span) / span;
+}
+
+// The whole code range: code c means lo + c (hi - lo) / max.
 template <typename UInt>
 [[nodiscard]] inline double decodeRange(UInt code, double lo, double hi) noexcept
 {
-    static_assert(std::is_unsigned_v<UInt>, "unsigned storage type expected");
-    constexpr double max = static_cast<double>(std::numeric_limits<UInt>::max());
-    return (code * (hi - lo) + lo * max) / max;
+    return decodeRange(code, lo, hi, 0.0, static_cast<double>(std::numeric_limits<UInt>::max()));
 }
 
 // NaN and values at or below lo -> 0; at or above hi -> max; otherwise round
@@ -78,26 +93,33 @@ template <typename UInt>
 // rounding is the defined behavior, as the product is in encodeUnorm. For a
 // binary32 value the code is the exact round half up of the value itself:
 // tests/exhaustive/cie_lab_exhaustive.cpp checks every binary32 input.
+// With codes c_lo..c_hi: the same, with c_hi - c_lo in place of max and the
+// result offset by c_lo; NaN and values at or below lo give c_lo.
 template <typename UInt>
-[[nodiscard]] inline UInt encodeRange(double value, double lo, double hi) noexcept
+[[nodiscard]] inline UInt encodeRange(double value, double lo, double hi, double c_lo, double c_hi) noexcept
 {
     static_assert(std::is_unsigned_v<UInt>, "unsigned storage type expected");
-    constexpr double max = static_cast<double>(std::numeric_limits<UInt>::max());
     if (!(value > lo)) {
-        return 0;
+        return static_cast<UInt>(c_lo);
     }
     if (value >= hi) {
-        return std::numeric_limits<UInt>::max();
+        return static_cast<UInt>(c_hi);
     }
     const double range = hi - lo;
-    const double scaled = (value - lo) * max;
+    const double scaled = (value - lo) * (c_hi - c_lo);
     double code = std::floor(scaled / range + 0.5);
     if ((code - 0.5) * range > scaled) {
         code -= 1.0;
     } else if ((code + 0.5) * range <= scaled) {
         code += 1.0;
     }
-    return static_cast<UInt>(code);
+    return static_cast<UInt>(c_lo + code);
+}
+
+template <typename UInt>
+[[nodiscard]] inline UInt encodeRange(double value, double lo, double hi) noexcept
+{
+    return encodeRange<UInt>(value, lo, hi, 0.0, static_cast<double>(std::numeric_limits<UInt>::max()));
 }
 
 // double -> float with IEEE-754 round-to-nearest-even, including overflow to

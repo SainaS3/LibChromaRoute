@@ -9,15 +9,17 @@
 
 namespace chromaroute::detail {
 
+struct YcbcrCoefficients;
+
 // Immutable recipe for converting one format to another (docs/architecture.md,
 // Conversion engine). Per pixel: unpack each stored component to double in
 // model order (missing ones read as 0, alpha as 1); bring the colors to the
-// hub: linear RGB of the source space (un-associate alpha, decode the TRCs,
-// gray -> RGB), or for CIE models XYZ (normalized to the D50 white when a Lab
-// or LCH side is involved, L*a*b* between Lab and LCH); one 3x3 matrix or a
-// luminance between hubs; then the reverse on the destination side (encode,
-// associate) and pack. Steps that cancel out are omitted; identical formats
-// copy bytes.
+// hub: linear RGB of the source space (Y'CbCr -> R~G~B~, un-associate alpha,
+// decode the TRCs, gray -> RGB), or for CIE models and Oklab XYZ (normalized
+// to the D50 white when a Lab or LCH side is involved, L*a*b* between Lab and
+// LCH); one 3x3 matrix or a luminance between hubs; then the reverse on the
+// destination side (encode, associate, R~G~B~ -> Y'CbCr) and pack. Steps that
+// cancel out are omitted; identical formats copy bytes.
 class ConversionPlan {
 public:
     // Shared, cached plan for the pair; nullptr when the pair is unsupported.
@@ -53,6 +55,7 @@ public:
         std::size_t fill_count;                             // model components the source does not store
         std::array<std::size_t, max_components> fill_index;
         Hub hub;
+        const YcbcrCoefficients* source_ycbcr; // Y'CbCr source: to R~G~B~ first; nullptr otherwise
         bool unassociate;  // divide source colors by the used alpha
         std::array<bool, 3> clamp_encoded; // elided gamma decode + encode: values <= 0 become 0
         Trcs decode;
@@ -66,6 +69,7 @@ public:
         bool neutral_to_cie; // RGB or gray -> CIE: neutral pixels skip the matrix (N7, N8)
         bool binary32_hue; // LCH stored as binary32: the hue rules hold for the stored values
         Trcs encode;
+        const YcbcrCoefficients* destination_ycbcr; // Y'CbCr destination: from R~G~B~ last
         bool associate;    // multiply destination colors by the used alpha
         bool nonfinite_alpha_to_nan; // kept association: colors x (used alpha / used alpha)
     };

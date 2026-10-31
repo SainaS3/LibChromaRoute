@@ -54,16 +54,24 @@ constexpr ComponentDescriptor cie_x{"CIE X"}, cie_y{"CIE Y"}, cie_z{"CIE Z"}, ci
     cie_small_y{"CIE y"}, cie_u{"CIE u"}, cie_v{"CIE v"}, cie_l{"CIE L"}, cie_a{"CIE a"}, cie_b{"CIE b"},
     cie_c{"CIE C(ab)"}, cie_h{"CIE H(ab)"};
 
-constexpr ModelDescriptor cieModel(std::string_view name, ColorFamily family, const ComponentDescriptor& c0,
-                                   const ComponentDescriptor& c1, const ComponentDescriptor& c2, bool alpha)
+// A model of three colors and, optionally, straight alpha.
+constexpr ModelDescriptor colorModel(std::string_view name, ColorFamily family, Encoding encoding,
+                                     const ComponentDescriptor& c0, const ComponentDescriptor& c1,
+                                     const ComponentDescriptor& c2, bool alpha)
 {
     return {name,
             family,
-            Encoding::none,
+            encoding,
             alpha ? Alpha::straight : Alpha::none,
             3,
             alpha ? std::size_t{4} : std::size_t{3},
             {&c0, &c1, &c2, alpha ? &component_alpha : nullptr, nullptr}};
+}
+
+constexpr ModelDescriptor cieModel(std::string_view name, ColorFamily family, const ComponentDescriptor& c0,
+                                   const ComponentDescriptor& c1, const ComponentDescriptor& c2, bool alpha)
+{
+    return colorModel(name, family, Encoding::none, c0, c1, c2, alpha);
 }
 
 constexpr ModelDescriptor cie_models[] = {
@@ -79,23 +87,45 @@ constexpr ModelDescriptor cie_models[] = {
     cieModel("CIE LCH(ab) alpha", ColorFamily::cie_lch, cie_l, cie_c, cie_h, true),
 };
 
+// Oklab (decision S3) and Y'CbCr (S4) models, with the reference catalogue's
+// names. Y'CbCr is computed from the R~G~B~ values of the format's space.
+constexpr ComponentDescriptor ok_l{"Ok L"}, ok_a{"Ok a"}, ok_b{"Ok b"}, ycbcr_y{"Y'"}, ycbcr_cb{"Cb"},
+    ycbcr_cr{"Cr"};
+
+constexpr ModelDescriptor oklab_ycbcr_models[] = {
+    colorModel("Oklab", ColorFamily::oklab, Encoding::none, ok_l, ok_a, ok_b, false),
+    colorModel("OklabA", ColorFamily::oklab, Encoding::none, ok_l, ok_a, ok_b, true),
+    colorModel("Y'CbCr", ColorFamily::ycbcr, Encoding::perceptual, ycbcr_y, ycbcr_cb, ycbcr_cr, false),
+    colorModel("Y'CbCrA", ColorFamily::ycbcr, Encoding::perceptual, ycbcr_y, ycbcr_cb, ycbcr_cr, true),
+    colorModel("Y'CbCr709", ColorFamily::ycbcr709, Encoding::perceptual, ycbcr_y, ycbcr_cb, ycbcr_cr, false),
+    colorModel("Y'CbCrA709", ColorFamily::ycbcr709, Encoding::perceptual, ycbcr_y, ycbcr_cb, ycbcr_cr, true),
+};
+
 // Lab encodings of ICC.1 (v4): L 0..100 and a, b -128..127 over the full code range.
 constexpr TypeDescriptor cie_u8_l{"CIE u8 L", ComponentType::u8, 1, 0.0, 100.0};
 constexpr TypeDescriptor cie_u8_ab{"CIE u8 ab", ComponentType::u8, 1, -128.0, 127.0};
 constexpr TypeDescriptor cie_u16_l{"CIE u16 L", ComponentType::u16, 2, 0.0, 100.0};
 constexpr TypeDescriptor cie_u16_ab{"CIE u16 ab", ComponentType::u16, 2, -128.0, 127.0};
+// Limited-range video codes: luma 0..1 on codes 16..235, chroma -0.5..0.5 on 16..240.
+constexpr TypeDescriptor ycbcr_u8_luma{"u8-luma", ComponentType::u8, 1, 0.0, 1.0, 16, 235};
+constexpr TypeDescriptor ycbcr_u8_chroma{"u8-chroma", ComponentType::u8, 1, -0.5, 0.5, 16, 240};
 
-// A CIE format with its own layout: (model component index, type) per stored component.
-struct CieFormat {
+// A format with its own layout: (model component index, type) per stored component.
+struct LayoutFormat {
     std::string_view name;
     const ModelDescriptor* model;
     std::size_t count;
     std::array<FormatComponent, max_components> components;
 };
 
-constexpr const ModelDescriptor& cieModelNamed(std::string_view name)
+constexpr const ModelDescriptor& modelNamed(std::string_view name)
 {
     for (const ModelDescriptor& m : cie_models) {
+        if (m.name == name) {
+            return m;
+        }
+    }
+    for (const ModelDescriptor& m : oklab_ycbcr_models) {
         if (m.name == name) {
             return m;
         }
@@ -104,19 +134,21 @@ constexpr const ModelDescriptor& cieModelNamed(std::string_view name)
 }
 
 // The formats beyond "<model> float" and "<model> double".
-constexpr CieFormat cie_special_formats[] = {
-    {"CIE L float", &cieModelNamed("CIE Lab"), 1, {{{0, &types[4]}}}},
-    {"CIE L alpha float", &cieModelNamed("CIE Lab alpha"), 2, {{{0, &types[4]}, {3, &types[4]}}}},
-    {"CIE Lab u8", &cieModelNamed("CIE Lab"), 3, {{{0, &cie_u8_l}, {1, &cie_u8_ab}, {2, &cie_u8_ab}}}},
+constexpr LayoutFormat layout_formats[] = {
+    {"CIE L float", &modelNamed("CIE Lab"), 1, {{{0, &types[4]}}}},
+    {"CIE L alpha float", &modelNamed("CIE Lab alpha"), 2, {{{0, &types[4]}, {3, &types[4]}}}},
+    {"CIE Lab u8", &modelNamed("CIE Lab"), 3, {{{0, &cie_u8_l}, {1, &cie_u8_ab}, {2, &cie_u8_ab}}}},
     {"CIE Lab alpha u8",
-     &cieModelNamed("CIE Lab alpha"),
+     &modelNamed("CIE Lab alpha"),
      4,
      {{{0, &cie_u8_l}, {1, &cie_u8_ab}, {2, &cie_u8_ab}, {3, &types[0]}}}},
-    {"CIE Lab u16", &cieModelNamed("CIE Lab"), 3, {{{0, &cie_u16_l}, {1, &cie_u16_ab}, {2, &cie_u16_ab}}}},
+    {"CIE Lab u16", &modelNamed("CIE Lab"), 3, {{{0, &cie_u16_l}, {1, &cie_u16_ab}, {2, &cie_u16_ab}}}},
     {"CIE Lab alpha u16",
-     &cieModelNamed("CIE Lab alpha"),
+     &modelNamed("CIE Lab alpha"),
      4,
      {{{0, &cie_u16_l}, {1, &cie_u16_ab}, {2, &cie_u16_ab}, {3, &types[1]}}}},
+    // Interleaved, at full resolution: LibChromaRoute's layout for this name.
+    {"Y'CbCr u8", &modelNamed("Y'CbCr"), 3, {{{0, &ycbcr_u8_luma}, {1, &ycbcr_u8_chroma}, {2, &ycbcr_u8_chroma}}}},
 };
 
 constexpr ModelDescriptor models[] = {
@@ -330,10 +362,11 @@ Registry::Registry()
     addSpace("ACEScg", {aces_x, aces_y, 0.713, 0.293, 0.165, 0.830, 0.128, 0.044}, all(linear));
     addSpace("ACES2065-1", {aces_x, aces_y, 0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.0770}, all(linear));
 
-    // Every RGB and gray model in every type; every CIE model in float and
-    // double, plus the CIE formats with their own layout. All in sRGB.
-    constexpr std::size_t count =
-        std::size(models) * std::size(types) + std::size(cie_models) * 2 + std::size(cie_special_formats);
+    // Every RGB and gray model in every type; every CIE, Oklab and Y'CbCr
+    // model in float and double; plus the formats with their own layout. All
+    // in sRGB.
+    constexpr std::size_t count = std::size(models) * std::size(types) + std::size(cie_models) * 2 +
+                                  std::size(oklab_ycbcr_models) * 2 + std::size(layout_formats);
     base_names.reserve(count); // never reallocates: formats keep views into it
     base_formats.reserve(count);
     const auto add = [&](std::string name, const ModelDescriptor& m, const TypeDescriptor& t) {
@@ -350,7 +383,14 @@ Registry::Registry()
             add(std::string(m.name) + " " + std::string(t->name), m, *t);
         }
     }
-    for (const CieFormat& special : cie_special_formats) {
+    for (const ModelDescriptor& m : oklab_ycbcr_models) {
+        for (const TypeDescriptor* t : {&types[4], &types[5]}) {
+            // The reference catalogue names OklabA's float format "Oklab alpha float".
+            const bool babl_name = m.name == "OklabA" && t == &types[4];
+            add(babl_name ? std::string("Oklab alpha float") : std::string(m.name) + " " + std::string(t->name), m, *t);
+        }
+    }
+    for (const LayoutFormat& special : layout_formats) {
         base_names.emplace_back(special.name);
         FormatDescriptor f{base_names.back(), base_names.back(), special.model, srgb_space, special.count,
                            special.components, 0, nullptr};

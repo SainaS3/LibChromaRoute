@@ -8,8 +8,9 @@ guessing; sampled cases that are too close to call are skipped and counted.
 
 Writes C++ headers <dir>/srgb_oracle_data.hpp (sRGB u8 <-> float, Milestone 1),
 <dir>/pixel_format_oracle_data.hpp (u16, luminance and gray cases, Milestone 2),
-<dir>/color_semantics_oracle_data.hpp (built-in spaces, gamma, alpha) and
-<dir>/cie_oracle_data.hpp (CIE XYZ, xyY, Yuv, Lab, LCH(ab), Milestone 4).
+<dir>/color_semantics_oracle_data.hpp (built-in spaces, gamma, alpha),
+<dir>/cie_oracle_data.hpp (CIE XYZ, xyY, Yuv, Lab, LCH(ab), Milestone 4) and
+<dir>/oklab_ycbcr_oracle_data.hpp (Oklab, Y'CbCr, Milestone 5).
 
 Usage: python tools/oracle/generate_srgb_oracle.py tests/data
 """
@@ -812,8 +813,243 @@ def write_cie_oracle(path: str) -> None:
     print(f"CIE oracle: skipped {skipped} cases")
 
 
+# ---- Oklab and Y'CbCr (Milestone 5) --------------------------------------
+
+def bradford_adaptation(source_white, target_white):
+    """Exact Bradford adaptation matrix between two XYZ whites (as in rgb_to_xyz_d50)."""
+    bradford = [[Fraction(v) for v in row] for row in
+                (("0.8951", "0.2664", "-0.1614"), ("-0.7502", "1.7135", "0.0367"), ("0.0389", "-0.0685", "1.0296"))]
+    source, target = matvec(bradford, source_white), matvec(bradford, target_white)
+    diagonal = [[target[i] / source[i] if i == j else Fraction(0) for j in range(3)] for i in range(3)]
+    return matmul(inverse3(bradford), matmul(diagonal, bradford))
+
+
+# CSS Color 4 sample code (decision S3): XYZ (D65) -> LMS, and LMS' -> Oklab.
+OKLAB_M1 = [[Fraction(v) for v in row] for row in (
+    ("0.8190224379967030", "0.3619062600528904", "-0.1288737815209879"),
+    ("0.0329836539323885", "0.9292868615863434", "0.0361446663506424"),
+    ("0.0481771893596242", "0.2642395317527308", "0.6335478284694309"))]
+OKLAB_M2 = [[Fraction(v) for v in row] for row in (
+    ("0.2104542683093140", "0.7936177747023054", "-0.0040720430116193"),
+    ("1.9779985324311684", "-2.4285922420485799", "0.4505937096174110"),
+    ("0.0259040424655478", "0.7827717124575296", "-0.8086757549230774"))]
+D65_SRGB = xy_to_xyz(Fraction("0.3127"), Fraction("0.3290"))
+
+
+def write_oklab_ycbcr_oracle(path: str) -> None:
+    srgb = rgb_to_xyz_d50(BUILTIN_SPACES[0][1])
+    srgb_inverse = inverse3(srgb)
+    prophoto = rgb_to_xyz_d50(BUILTIN_SPACES[5][1])
+    m1 = matmul(OKLAB_M1, bradford_adaptation(D50, D65_SRGB))  # D50 XYZ -> LMS
+    m1_inverse, m2_inverse = inverse3(m1), inverse3(OKLAB_M2)
+    rng = Lcg(0x0C1AB)
+    skipped = 0
+
+    def unit() -> float:
+        return struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] - 1.0
+
+    def to_f32(x: float) -> float:
+        return struct.unpack("<f", struct.pack("<f", x))[0]
+
+    def srgb_decode(code: int) -> Decimal:
+        return decimal(srgb_to_linear(Fraction(code, 255))[0])
+
+    def prophoto_decode(code: int) -> Decimal:
+        return decimal(gamma_pow(Fraction(code, 255), Fraction(1.8))[0])
+
+    def dmatvec(m, v):
+        return [sum(decimal(m[r][k]) * v[k] for k in range(3)) for r in range(3)]
+
+    def dmags(m, v):
+        return [sum(abs(decimal(m[r][k]) * v[k]) for k in range(3)) for r in range(3)]
+
+    def oklab_of_xyz(xyz):
+        lms = dmatvec(m1, xyz)
+        root = [d_cbrt(x) for x in lms]
+        return dmatvec(OKLAB_M2, root), dmags(OKLAB_M2, root)
+
+    def oklab_bits(xyz):
+        lab, mags = oklab_of_xyz(xyz)
+        return [f32_or_skip(lab[i], mags[i]) for i in range(3)]
+
+    def random_codes(count, extra):
+        cases = list(extra)
+        while len(cases) < count:
+            r = rng.next()
+            cases.append((r & 0xFF, (r >> 8) & 0xFF, (r >> 16) & 0xFF))
+        return cases
+
+    corners = [(255, 255, 255), (0, 0, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255),
+               (255, 0, 255), (128, 128, 128)]
+
+    # R'G'B' u8 (sRGB, ProPhoto) -> Oklab float.
+    def oklab_cases(m, decode, count):
+        nonlocal skipped
+        inputs, out = [], []
+        for rgb in random_codes(count, corners):
+            bits = oklab_bits(dmatvec(m, [decode(c) for c in rgb]))
+            if None in bits:
+                skipped += 1
+                continue
+            inputs.append(rgb[0] | rgb[1] << 8 | rgb[2] << 16)
+            out.extend(bits)
+        return inputs, out
+
+    srgb_in, srgb_oklab = oklab_cases(srgb, srgb_decode, 1024)
+    pro_in, pro_oklab = oklab_cases(prophoto, prophoto_decode, 256)
+
+    # Linear sRGB float -> Oklab float, including out-of-gamut values.
+    linear_in, linear_oklab = [], []
+    while len(linear_in) < 512 * 3:
+        rgb = [to_f32(1.5 * unit() - 0.25) for _ in range(3)]
+        bits = oklab_bits(dmatvec(srgb, [D(c) for c in rgb]))
+        if None in bits:
+            skipped += 1
+            continue
+        linear_in.extend(f32_bits(c) for c in rgb)
+        linear_oklab.extend(bits)
+
+    # Oklab float -> CIE XYZ float and R'G'B' u8 (sRGB).
+    inverse_in, inverse_xyz, inverse_rgb = [], [], []
+    while len(inverse_in) < 1024 * 3:
+        lab32 = [to_f32(unit()), to_f32(0.6 * unit() - 0.3), to_f32(0.6 * unit() - 0.3)]
+        lab = [D(c) for c in lab32]
+        root = dmatvec(m2_inverse, lab)
+        root_mags = dmags(m2_inverse, lab)
+        lms = [x * x * x for x in root]
+        lms_mags = [3 * root_mags[i] * root[i] * root[i] for i in range(3)]
+        xyz = dmatvec(m1_inverse, lms)
+        xyz_mags = [sum(abs(decimal(m1_inverse[r][k])) * lms_mags[k] for k in range(3)) for r in range(3)]
+        xyz_bits = [f32_or_skip(xyz[i], xyz_mags[i]) for i in range(3)]
+        linear = dmatvec(srgb_inverse, xyz)
+        codes = [quantize_or_skip(linear_to_srgb(Fraction(c))[0], 255) for c in linear]
+        if None in xyz_bits or None in codes:
+            skipped += 1
+            continue
+        inverse_in.extend(f32_bits(c) for c in lab32)
+        inverse_xyz.extend(xyz_bits)
+        inverse_rgb.extend(codes)
+
+    # Y'CbCr from R~G~B~ with exact weights: R' = code / 255 in sRGB (the
+    # R'G'B' TRC is the sRGB curve there).
+    def ycbcr_exact(rgb, kr, kb):
+        kg = 1 - kr - kb
+        y = kr * rgb[0] + kg * rgb[1] + kb * rgb[2]
+        return [y, (rgb[2] - y) / (2 * (1 - kb)), (rgb[0] - y) / (2 * (1 - kr))]
+
+    def ycbcr_mags(rgb, kr, kb):
+        y = abs(rgb[1]) + abs(kr * (rgb[0] - rgb[1])) + abs(kb * (rgb[2] - rgb[1]))
+        return [y, (abs(rgb[2]) + y) / (2 * (1 - kb)), (abs(rgb[0]) + y) / (2 * (1 - kr))]
+
+    bt601 = (Fraction("0.299"), Fraction("0.114"))
+    bt709 = (Fraction("0.2126"), Fraction("0.0722"))
+
+    def code_or_skip(value: Fraction, lo: Fraction, hi: Fraction, c_lo: int, c_hi: int):
+        """Round half up of c_lo + (v - lo)(c_hi - c_lo)/(hi - lo), clamped; None at an exact tie."""
+        if value <= lo:
+            return c_lo
+        if value >= hi:
+            return c_hi
+        scaled = c_lo + (value - lo) * (c_hi - c_lo) / (hi - lo)
+        if scaled - int(scaled) == Fraction(1, 2):
+            return None
+        return int(scaled + Fraction(1, 2))
+
+    ycc_in, ycc601, ycc709, ycc601_u8 = [], [], [], []
+    for rgb in random_codes(1024, corners):
+        exact = [Fraction(c, 255) for c in rgb]
+        f601 = ycbcr_exact(exact, *bt601)
+        m601 = ycbcr_mags(exact, *bt601)
+        f709 = ycbcr_exact(exact, *bt709)
+        m709 = ycbcr_mags(exact, *bt709)
+        bits = [nearest_f32_or_skip(f601[i], True, m601[i]) for i in range(3)] + \
+               [nearest_f32_or_skip(f709[i], True, m709[i]) for i in range(3)]
+        codes = [code_or_skip(f601[0], Fraction(0), Fraction(1), 16, 235)] + \
+                [code_or_skip(f601[i], Fraction(-1, 2), Fraction(1, 2), 16, 240) for i in (1, 2)]
+        if None in bits or None in codes:
+            skipped += 1
+            continue
+        ycc_in.append(rgb[0] | rgb[1] << 8 | rgb[2] << 16)
+        ycc601.extend(bits[:3])
+        ycc709.extend(bits[3:])
+        ycc601_u8.extend(codes)
+
+    # R'G'B' u8-ProPhoto -> Y'CbCr float-ProPhoto: decode the gamma 1.8, then the
+    # sRGB curve on ProPhoto's linear RGB (S4).
+    pro_ycc_in, pro_ycc = [], []
+    for rgb in random_codes(256, corners):
+        tilde = [Fraction(linear_to_srgb(Fraction(prophoto_decode(c)))[0]) for c in rgb]
+        values = ycbcr_exact(tilde, *bt601)
+        mags = ycbcr_mags(tilde, *bt601)
+        bits = [nearest_f32_or_skip(values[i], True, mags[i]) for i in range(3)]
+        if None in bits:
+            skipped += 1
+            continue
+        pro_ycc_in.append(rgb[0] | rgb[1] << 8 | rgb[2] << 16)
+        pro_ycc.extend(bits)
+
+    # Y'CbCr u8 codes -> R'G'B' u8 (sRGB), and Y'CbCr709 float -> R'G'B' u8.
+    def rgb_from_ycbcr(ycc, kr, kb):
+        kg = 1 - kr - kb
+        r = ycc[0] + 2 * (1 - kr) * ycc[2]
+        b = ycc[0] + 2 * (1 - kb) * ycc[1]
+        return [r, (ycc[0] - kr * r - kb * b) / kg, b]
+
+    u8_in, u8_rgb = [], []
+    while len(u8_in) < 1024:
+        codes = [16 + rng.next() % 220, 16 + rng.next() % 225, 16 + rng.next() % 225]
+        ycc = [Fraction(codes[0] - 16, 219), Fraction(codes[1] - 128, 224), Fraction(codes[2] - 128, 224)]
+        out = [quantize_or_skip(c, 255) for c in rgb_from_ycbcr(ycc, *bt601)]
+        if None in out:
+            skipped += 1
+            continue
+        u8_in.append(codes[0] | codes[1] << 8 | codes[2] << 16)
+        u8_rgb.extend(out)
+    f709_in, f709_rgb = [], []
+    while len(f709_in) < 512 * 3:
+        ycc32 = [to_f32(unit()), to_f32(unit() - 0.5), to_f32(unit() - 0.5)]
+        out = [quantize_or_skip(c, 255) for c in rgb_from_ycbcr([Fraction(c) for c in ycc32], *bt709)]
+        if None in out:
+            skipped += 1
+            continue
+        f709_in.extend(f32_bits(c) for c in ycc32)
+        f709_rgb.extend(out)
+
+    with open(path, "w", newline="\n") as f:
+        begin_header(f,
+                     "Generated by tools/oracle/generate_srgb_oracle.py; do not edit.\n"
+                     "Oklab with the CSS Color 4 matrices after Bradford adaptation from the\n"
+                     "ICC D50 white to D65 (x 0.3127, y 0.3290), decision S3; Y'CbCr from the\n"
+                     "sRGB-curve encoding with BT.601 and BT.709 weights, decision S4. Exact\n"
+                     "rationals, cube roots at 60 digits; binary32 bit patterns and u8 codes.\n"
+                     f"Cases skipped as too close to call: {skipped}.",
+                     ["array", "cstdint"])
+        f.write(u32_table("oklab_srgb_u8_inputs", "R'G'B' u8 (sRGB): R | G << 8 | B << 16", srgb_in))
+        f.write(u32_table("srgb_u8_to_oklab_f32", "Oklab float L, a, b", srgb_oklab))
+        f.write(u32_table("oklab_prophoto_u8_inputs", "R'G'B' u8-ProPhoto: R | G << 8 | B << 16", pro_in))
+        f.write(u32_table("prophoto_u8_to_oklab_f32", "Oklab float L, a, b", pro_oklab))
+        f.write(u32_table("oklab_linear_f32_inputs", "linear sRGB R, G, B (binary32 bits)", linear_in))
+        f.write(u32_table("linear_f32_to_oklab_f32", "Oklab float L, a, b", linear_oklab))
+        f.write(u32_table("oklab_f32_inputs", "Oklab float L, a, b (binary32 bits)", inverse_in))
+        f.write(u32_table("oklab_f32_to_xyz_f32", "CIE XYZ float (D50)", inverse_xyz))
+        f.write(u32_table("oklab_f32_to_srgb_u8", "R'G'B' u8 (sRGB) components", inverse_rgb))
+        f.write(u32_table("ycbcr_srgb_u8_inputs", "R'G'B' u8 (sRGB): R | G << 8 | B << 16", ycc_in))
+        f.write(u32_table("srgb_u8_to_ycbcr_f32", "Y'CbCr float (BT.601)", ycc601))
+        f.write(u32_table("srgb_u8_to_ycbcr709_f32", "Y'CbCr709 float", ycc709))
+        f.write(u32_table("srgb_u8_to_ycbcr_u8", "Y'CbCr u8 codes", ycc601_u8))
+        f.write(u32_table("ycbcr_prophoto_u8_inputs", "R'G'B' u8-ProPhoto: R | G << 8 | B << 16", pro_ycc_in))
+        f.write(u32_table("prophoto_u8_to_ycbcr_f32", "Y'CbCr float-ProPhoto", pro_ycc))
+        f.write(u32_table("ycbcr_u8_inputs", "Y'CbCr u8: Y' | Cb << 8 | Cr << 16", u8_in))
+        f.write(u32_table("ycbcr_u8_to_srgb_u8", "R'G'B' u8 (sRGB) components", u8_rgb))
+        f.write(u32_table("ycbcr709_f32_inputs", "Y'CbCr709 float (binary32 bits)", f709_in))
+        f.write(u32_table("ycbcr709_f32_to_srgb_u8", "R'G'B' u8 (sRGB) components", f709_rgb))
+        end_header(f)
+    print(f"Oklab and Y'CbCr oracle: skipped {skipped} cases")
+
+
 def main() -> None:
     out_dir = sys.argv[1]
+    write_oklab_ycbcr_oracle(f"{out_dir}/oklab_ycbcr_oracle_data.hpp")
     write_cie_oracle(f"{out_dir}/cie_oracle_data.hpp")
     write_color_semantics_oracle(f"{out_dir}/color_semantics_oracle_data.hpp")
     write_pixel_format_oracle(f"{out_dir}/pixel_format_oracle_data.hpp")

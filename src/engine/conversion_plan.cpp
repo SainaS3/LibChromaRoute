@@ -4,7 +4,9 @@
 #include "engine/color_math.hpp"
 #include "engine/half.hpp"
 #include "engine/numeric.hpp"
+#include "engine/oklab.hpp"
 #include "engine/transfer.hpp"
+#include "engine/ycbcr.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -52,12 +54,21 @@ void packUnorm(const TypeDescriptor&, const double* in, std::size_t value_stride
     }
 }
 
+// The highest code of a range type: code_max, or the storage's largest code.
+template <typename UInt>
+double highestCode(const TypeDescriptor& type) noexcept
+{
+    return type.code_max != 0 ? static_cast<double>(type.code_max) : static_cast<double>(std::numeric_limits<UInt>::max());
+}
+
 template <typename UInt>
 void unpackRange(const TypeDescriptor& type, const std::byte* in, std::size_t byte_stride, double* out,
                  std::size_t value_stride, std::size_t count)
 {
+    const double code_lo = type.code_min;
+    const double code_hi = highestCode<UInt>(type);
     for (std::size_t i = 0; i < count; ++i) {
-        out[i * value_stride] = decodeRange(load<UInt>(in + i * byte_stride), type.min, type.max);
+        out[i * value_stride] = decodeRange(load<UInt>(in + i * byte_stride), type.min, type.max, code_lo, code_hi);
     }
 }
 
@@ -65,8 +76,10 @@ template <typename UInt>
 void packRange(const TypeDescriptor& type, const double* in, std::size_t value_stride, std::byte* out,
                std::size_t byte_stride, std::size_t count)
 {
+    const double code_lo = type.code_min;
+    const double code_hi = highestCode<UInt>(type);
     for (std::size_t i = 0; i < count; ++i) {
-        store(out + i * byte_stride, encodeRange<UInt>(in[i * value_stride], type.min, type.max));
+        store(out + i * byte_stride, encodeRange<UInt>(in[i * value_stride], type.min, type.max, code_lo, code_hi));
     }
 }
 
@@ -159,7 +172,7 @@ const TrcDescriptor* trcOf(const ModelDescriptor& model, const SpaceDescriptor& 
 
 using Hub = ConversionPlan::Hub;
 
-// A CIE model's colors -> the hub.
+// A CIE or Oklab model's colors -> the hub.
 Vector3 cieToHub(ColorFamily family, Hub hub, const Vector3& v) noexcept
 {
     if (hub == Hub::same) {
@@ -168,20 +181,25 @@ Vector3 cieToHub(ColorFamily family, Hub hub, const Vector3& v) noexcept
     if (hub == Hub::lab) {
         return family == ColorFamily::cie_lch ? labFromLch(v) : v;
     }
+    const auto xyz = [&] {
+        switch (family) {
+            case ColorFamily::cie_xyy: return xyzFromXyy(v);
+            case ColorFamily::cie_yuv: return xyzFromYuv(v);
+            case ColorFamily::oklab: return xyzFromOklab(v);
+            default: return v;
+        }
+    };
     if (hub == Hub::xyz) {
-        return family == ColorFamily::cie_xyy ? xyzFromXyy(v) : family == ColorFamily::cie_yuv ? xyzFromYuv(v) : v;
+        return xyz();
     }
     switch (family) {
-        case ColorFamily::cie_xyz: return normalizedFromXyz(v);
-        case ColorFamily::cie_xyy: return normalizedFromXyz(xyzFromXyy(v));
-        case ColorFamily::cie_yuv: return normalizedFromXyz(xyzFromYuv(v));
         case ColorFamily::cie_lab: return normalizedFromLab(v);
         case ColorFamily::cie_lch: return normalizedFromLab(labFromLch(v));
-        default: return v;
+        default: return normalizedFromXyz(xyz());
     }
 }
 
-// The hub -> a CIE model's colors.
+// The hub -> a CIE or Oklab model's colors.
 Vector3 cieFromHub(ColorFamily family, Hub hub, const Vector3& t) noexcept
 {
     if (hub == Hub::same) {
@@ -190,16 +208,21 @@ Vector3 cieFromHub(ColorFamily family, Hub hub, const Vector3& t) noexcept
     if (hub == Hub::lab) {
         return family == ColorFamily::cie_lch ? lchFromLab(t) : t;
     }
+    const auto fromXyz = [&](const Vector3& xyz) {
+        switch (family) {
+            case ColorFamily::cie_xyy: return xyyFromXyz(xyz);
+            case ColorFamily::cie_yuv: return yuvFromXyz(xyz);
+            case ColorFamily::oklab: return oklabFromXyz(xyz);
+            default: return xyz;
+        }
+    };
     if (hub == Hub::xyz) {
-        return family == ColorFamily::cie_xyy ? xyyFromXyz(t) : family == ColorFamily::cie_yuv ? yuvFromXyz(t) : t;
+        return fromXyz(t);
     }
     switch (family) {
-        case ColorFamily::cie_xyz: return xyzFromNormalized(t);
-        case ColorFamily::cie_xyy: return xyyFromXyz(xyzFromNormalized(t));
-        case ColorFamily::cie_yuv: return yuvFromXyz(xyzFromNormalized(t));
         case ColorFamily::cie_lab: return labFromNormalized(t);
         case ColorFamily::cie_lch: return lchFromLab(labFromNormalized(t));
-        default: return t;
+        default: return fromXyz(xyzFromNormalized(t));
     }
 }
 
@@ -209,8 +232,8 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     const ModelDescriptor& to = *destination.model;
     const SpaceDescriptor& from_space = *source.space;
     const SpaceDescriptor& to_space = *destination.space;
-    const bool from_rgb = from.family == ColorFamily::rgb;
-    const bool to_rgb = to.family == ColorFamily::rgb;
+    const bool from_rgb = from.rgbLike(); // RGB and Y'CbCr
+    const bool to_rgb = to.rgbLike();
     const bool to_gray = to.family == ColorFamily::gray;
     const bool from_cie = !from.rgbOrGray();
     const bool to_cie = !to.rgbOrGray();
@@ -241,10 +264,11 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // The hub between the models, and the linear steps between hubs (N7). In a
     // space derived from chromaticities R = G = B is the D50 white, so a gray
     // source needs no matrix: in normalized XYZ it is (Y, Y, Y), in XYZ
-    // (Y Xn, Y, Y Zn). Matrix spaces are the exception below (N9). The normalized hub serves Lab and LCH, whose a* and
-    // b* of a gray source are then 0 exactly; without them XYZ itself saves
-    // the division and multiplication by the white. RGB -> gray takes the
-    // luminance in the source space; XYZ -> gray is Y.
+    // (Y Xn, Y, Y Zn). Matrix spaces are the exception below (N9). The
+    // normalized hub serves Lab and LCH, whose a* and b* of a gray source are
+    // then 0 exactly; without them XYZ itself saves the division and
+    // multiplication by the white. RGB -> gray takes the luminance in the source
+    // space; XYZ -> gray is Y.
     const auto labLike = [](ColorFamily f) { return f == ColorFamily::cie_lab || f == ColorFamily::cie_lch; };
     if (from_cie && to_cie && from.family == to.family) {
         steps.hub = Hub::same;
@@ -340,6 +364,17 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     steps.unassociate = from.associated() && !keep_association;
     steps.associate = to.associated() && !keep_association;
     steps.nonfinite_alpha_to_nan = keep_association && !type_only;
+    // Y'CbCr converts from and to R~G~B~ of its space (S4). Between two formats
+    // of one Y'CbCr model whose values stay encoded the two steps cancel, so the
+    // values are copied.
+    const auto ycbcrOf = [](const ModelDescriptor& m) -> const YcbcrCoefficients* {
+        return m.family == ColorFamily::ycbcr      ? &bt601_ycbcr
+               : m.family == ColorFamily::ycbcr709 ? &bt709_ycbcr
+                                                   : nullptr;
+    };
+    const bool same_ycbcr = from.family == to.family && stay_encoded;
+    steps.source_ycbcr = same_ycbcr ? nullptr : ycbcrOf(from);
+    steps.destination_ycbcr = same_ycbcr ? nullptr : ycbcrOf(to);
     return std::make_shared<const ConversionPlan>(source, destination, steps);
 }
 
@@ -399,10 +434,18 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         Vector3 c{};
         bool neutral = false;
         if (from_rgb_or_gray) {
-            // Un-associate in the source's own domain, then decode.
+            // Y'CbCr to R~G~B~ first; un-associate in the source's own domain,
+            // then decode.
+            Vector3 encoded{};
+            for (std::size_t i = 0; i < in_colors; ++i) {
+                encoded[i] = src[i];
+            }
+            if (steps_.source_ycbcr != nullptr) {
+                encoded = rgbFromYcbcr(encoded, *steps_.source_ycbcr);
+            }
             const double source_scale = steps_.unassociate ? usedAlpha(alpha) : 1.0;
             for (std::size_t i = 0; i < in_colors; ++i) {
-                c[i] = steps_.unassociate ? src[i] / source_scale : src[i];
+                c[i] = steps_.unassociate ? encoded[i] / source_scale : encoded[i];
                 if (steps_.clamp_encoded[i] && c[i] <= 0.0) {
                     c[i] = 0.0; // as decode + encode would; NaN passes
                 }
@@ -458,6 +501,12 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
                 if (steps_.associate || steps_.nonfinite_alpha_to_nan) {
                     dst[i] *= destination_scale;
                 }
+            }
+            if (steps_.destination_ycbcr != nullptr) { // R~G~B~ to Y'CbCr last
+                const Vector3 ycc = ycbcrFromRgb({dst[0], dst[1], dst[2]}, *steps_.destination_ycbcr);
+                dst[0] = ycc[0];
+                dst[1] = ycc[1];
+                dst[2] = ycc[2];
             }
         } else {
             Vector3 colors = cieFromHub(to.family, steps_.hub, v);

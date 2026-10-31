@@ -33,14 +33,18 @@ enum class ColorFamily : std::uint8_t {
     cie_yuv, // CIE 1976 Y u' v' ("CIE Yuv")
     cie_lab, // CIE 1976 L*a*b*, D50 white ("CIE Lab")
     cie_lch, // CIE LCh(ab): L*, chroma, hue in degrees ("CIE LCH(ab)")
+    oklab,   // Oklab: L, a, b from D65 XYZ with the CSS Color 4 matrices ("Oklab")
+    ycbcr,   // Y'CbCr with BT.601 luma weights, from R~G~B~ of the space ("Y'CbCr")
+    ycbcr709, // Y'CbCr with BT.709 luma weights ("Y'CbCr709")
 };
 
 // How color components (never alpha) are encoded.
 enum class Encoding : std::uint8_t {
     linear,     // linear light, e.g. "RGBA"
     space_trc,  // encoded with the color space's TRC, e.g. "R'G'B'A"
-    perceptual, // encoded with the sRGB TRC whatever the space, e.g. "R~G~B~A"
-    none,       // not RGB or gray: the model defines its values (CIE models)
+    perceptual, // encoded with the sRGB TRC whatever the space, e.g. "R~G~B~A";
+                // Y'CbCr is computed from these values
+    none,       // the model defines its values (CIE models, Oklab)
 };
 
 enum class Alpha : std::uint8_t {
@@ -55,14 +59,16 @@ enum class Alpha : std::uint8_t {
 
 // An interned, immutable pixel format. Cheap to copy; equality is identity.
 // Components are interleaved: colors first (R, G, B, Y, or the model's three
-// CIE components), then alpha. A few formats store only some of their model's
+// components), then alpha. A few formats store only some of their model's
 // components ("CIE L float" holds L of CIE Lab); the others read as 0 (alpha
 // as 1).
 class PixelFormat {
 public:
-    // Looks up a format by name: "<model> <type>" for sRGB, e.g. "R'G'B'A u8"
-    // or "CIE Lab alpha float", or the same with "-<space>", e.g.
-    // "RGBA float-Rec2020". CIE values do not depend on the space.
+    // Looks up a format by name: "<model> <type>" for sRGB, e.g. "R'G'B'A u8",
+    // "CIE Lab alpha float" or "Y'CbCr709 double", or the same with "-<space>",
+    // e.g. "RGBA float-Rec2020". A few names follow babl instead ("Oklab alpha
+    // float", "Y'CbCr u8"). CIE and Oklab values do not depend on the space;
+    // Y'CbCr values are relative to it.
     static Result<PixelFormat> fromName(std::string_view name);
 
     // The same model and type in another space ("<model> <type>-<space>",

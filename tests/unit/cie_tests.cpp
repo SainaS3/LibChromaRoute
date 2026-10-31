@@ -2,6 +2,7 @@
 // (tests/data/cie_oracle_data.hpp), the Lab integer encodings at every
 // threshold, and the edge-case rules of docs/model_coverage.md §3.
 
+#include "support/conversion_checks.hpp"
 #include "support/test_harness.hpp"
 
 #include "data/cie_oracle_data.hpp"
@@ -25,136 +26,12 @@ using chromaroute::Converter;
 using chromaroute::PixelFormat;
 
 namespace oracle = chromaroute::test::oracle;
+using namespace chromaroute::test;
 
 namespace {
 
-template <typename To, typename From>
-std::vector<To> convert(const char* from, const char* to, const std::vector<From>& input)
-{
-    const Converter converter = *Converter::create(*PixelFormat::fromName(from), *PixelFormat::fromName(to));
-    const std::size_t pixels = input.size() * sizeof(From) / converter.sourceFormat().bytesPerPixel();
-    std::vector<To> output(pixels * converter.destinationFormat().bytesPerPixel() / sizeof(To));
-    if (!converter.process(std::as_bytes(std::span(input)), std::as_writable_bytes(std::span(output)), pixels)) {
-        output.push_back(To{}); // size mismatch makes any comparison fail
-    }
-    return output;
-}
-
-std::vector<std::uint8_t> unpackRgb(std::span<const std::uint32_t> packed)
-{
-    std::vector<std::uint8_t> rgb;
-    for (std::uint32_t p : packed) {
-        rgb.insert(rgb.end(), {static_cast<std::uint8_t>(p), static_cast<std::uint8_t>(p >> 8),
-                               static_cast<std::uint8_t>(p >> 16)});
-    }
-    return rgb;
-}
-
-std::vector<float> floats(std::span<const std::uint32_t> bits)
-{
-    std::vector<float> out;
-    for (std::uint32_t b : bits) {
-        out.push_back(std::bit_cast<float>(b));
-    }
-    return out;
-}
-
-int bitMismatches(const std::vector<float>& got, std::span<const std::uint32_t> expected, std::FILE* log)
-{
-    if (got.size() != expected.size()) {
-        return 1 << 20;
-    }
-    int mismatches = 0;
-    for (std::size_t i = 0; i < got.size(); ++i) {
-        if (std::bit_cast<std::uint32_t>(got[i]) != expected[i] && ++mismatches <= 5) {
-            std::fprintf(log, "  [%zu] got %a expected %a\n", i, static_cast<double>(got[i]),
-                         static_cast<double>(std::bit_cast<float>(expected[i])));
-        }
-    }
-    return mismatches;
-}
-
-template <typename T>
-int codeMismatches(const std::vector<T>& got, std::span<const std::uint32_t> expected, std::FILE* log)
-{
-    if (got.size() != expected.size()) {
-        return 1 << 20;
-    }
-    int mismatches = 0;
-    for (std::size_t i = 0; i < got.size(); ++i) {
-        if (got[i] != expected[i] && ++mismatches <= 5) {
-            std::fprintf(log, "  [%zu] got %u expected %u\n", i, static_cast<unsigned>(got[i]),
-                         static_cast<unsigned>(expected[i]));
-        }
-    }
-    return mismatches;
-}
-
-// The exact code a binary32 value gets in an integer range encoding: round half
-// up of (x - lo) * max / (hi - lo). It is decided in 64-bit integers on x's
-// mantissa and exponent, not with the library's double arithmetic. Every value
-// this test uses has |x| >= 2^-11, so x * 2^35 is an integer, and the products
-// stay below 2^61.
-long exactCode(float x, double lo, double hi, double max)
-{
-    if (!(x > lo)) {
-        return 0;
-    }
-    if (x >= hi) {
-        return static_cast<long>(max);
-    }
-    int exponent = 0;
-    const double fraction = std::frexp(static_cast<double>(x), &exponent); // x = fraction * 2^exponent
-    const int shift = exponent - 24 + 35;
-    if (shift < 0) {
-        return -1; // outside what this test uses: fails the comparison
-    }
-    const std::int64_t one = std::int64_t{1} << 35;
-    const auto mantissa = static_cast<std::int64_t>(std::ldexp(fraction, 24));
-    const auto range = static_cast<std::int64_t>(hi - lo);
-    const std::int64_t twice_scaled = // 2 (x - lo) max, times 2^35
-        2 * (mantissa * (std::int64_t{1} << shift) - static_cast<std::int64_t>(lo) * one) * static_cast<std::int64_t>(max);
-    long code = 0;
-    long high = static_cast<long>(max);
-    while (code < high) { // largest k with 2 * scaled >= (2k - 1) * range, by bisection
-        const long mid = (code + high + 1) / 2;
-        if (twice_scaled >= (2 * std::int64_t{mid} - 1) * range * one) {
-            code = mid;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return code;
-}
-
-// The defined code of a double value (docs/architecture.md, integer range
-// types): s = (v - lo) * max evaluated in double, then round half up of
-// s / (hi - lo), decided with exact comparisons (2 s and (2k - 1)(hi - lo) are
-// exact in double).
-long definedCode(double v, double lo, double hi, double max)
-{
-    if (!(v > lo)) {
-        return 0;
-    }
-    if (v >= hi) {
-        return static_cast<long>(max);
-    }
-    const double twice_scaled = 2.0 * ((v - lo) * max);
-    long code = 0;
-    long high = static_cast<long>(max);
-    while (code < high) {
-        const long mid = (code + high + 1) / 2;
-        if (twice_scaled >= (2.0 * mid - 1.0) * (hi - lo)) {
-            code = mid;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return code;
-}
-
 // Doubles within 3 ulps of every threshold of one Lab channel, "CIE Lab double"
-// -> format, against definedCode.
+// -> format, against definedRangeCode.
 template <typename Code>
 int doubleEncodingMismatches(const char* format, double max, std::FILE* log)
 {
@@ -177,7 +54,7 @@ int doubleEncodingMismatches(const char* format, double max, std::FILE* log)
         }
         const auto encoded = convert<Code>("CIE Lab double", format, lab);
         for (std::size_t i = 0; i < values.size(); ++i) {
-            const long expected = definedCode(values[i], lo, hi, max);
+            const long expected = definedRangeCode(values[i], lo, hi, 0, static_cast<long>(max));
             const long got = encoded.size() == lab.size() ? static_cast<long>(encoded[i * 3 + channel]) : -1L;
             if (got != expected && ++mismatches <= 5) {
                 std::fprintf(log, "  %s channel %zu: %a -> %ld, expected %ld\n", format, channel, values[i], got,
@@ -188,20 +65,6 @@ int doubleEncodingMismatches(const char* format, double max, std::FILE* log)
     return mismatches;
 }
 
-// True when d is a double nearest to n / max, for an integer n: the residuals
-// d * max - n are exact under fma here, and neither neighbor of d has a smaller one.
-bool nearestQuotient(double d, double n, double max)
-{
-    const auto residual = [&](double x) { return std::fabs(std::fma(x, max, -n)); };
-    const double r = residual(d);
-    return r <= residual(std::nextafter(d, -1e300)) && r <= residual(std::nextafter(d, 1e300));
-}
-
-int bitsDiffer(double a, double b)
-{
-    return std::bit_cast<std::uint64_t>(a) != std::bit_cast<std::uint64_t>(b);
-}
-
 // Floats on both sides of every threshold of one Lab channel, plus the expected codes.
 void thresholdCases(double lo, double hi, double max, std::vector<float>& values, std::vector<long>& codes)
 {
@@ -209,7 +72,7 @@ void thresholdCases(double lo, double hi, double max, std::vector<float>& values
         const float at = static_cast<float>(lo + (2.0 * k + 1.0) * (hi - lo) / (2.0 * max));
         for (float x : {std::nextafter(at, -1e9f), at, std::nextafter(at, 1e9f)}) {
             values.push_back(x);
-            codes.push_back(exactCode(x, lo, hi, max));
+            codes.push_back(exactRangeCode(x, lo, hi, 0, static_cast<long>(max)));
         }
     }
 }
@@ -456,7 +319,7 @@ CR_TEST(hue_rule_and_lab_lch_round_trips)
     const auto back = convert<double>("CIE LCH(ab) double", "CIE Lab double", convert<double>("CIE Lab double", "CIE LCH(ab) double", lab));
     double worst = 0;
     for (std::size_t i = 0; i < lab.size(); ++i) {
-        worst = std::max(worst, std::fabs(back[i] - lab[i]));
+        worst = worstOf(worst, std::fabs(back[i] - lab[i]));
     }
     CR_CHECK(worst < 1e-12);
     // L passes through unchanged.
@@ -651,7 +514,7 @@ CR_TEST(cie_alpha_partial_formats_and_round_trips)
         const auto back = convert<double>(model, "RGB double", convert<double>("RGB double", model, rgb));
         double worst = 0;
         for (std::size_t i = 0; i < rgb.size(); ++i) {
-            worst = std::max(worst, std::fabs(back[i] - rgb[i]));
+            worst = worstOf(worst, std::fabs(back[i] - rgb[i]));
         }
         CR_CHECK(worst < 1e-13);
         if (worst >= 1e-13) {
@@ -856,7 +719,7 @@ CR_TEST(matrix_spaces_use_their_own_matrix_for_neutrals)
     for (const char* model : {"CIE XYZ double", "CIE xyY double", "CIE Yuv double", "CIE Lab double", "CIE LCH(ab) double"}) {
         const auto back = convert<double>(model, name("RGB double").c_str(), convert<double>(name("RGB double").c_str(), model, rgb));
         for (std::size_t i = 0; i < rgb.size(); ++i) {
-            worst = std::max(worst, back.size() == rgb.size() ? std::fabs(back[i] - rgb[i]) : 1.0);
+            worst = worstOf(worst, back.size() == rgb.size() ? std::fabs(back[i] - rgb[i]) : 1.0);
         }
     }
     CR_CHECK(worst < 1e-14);
