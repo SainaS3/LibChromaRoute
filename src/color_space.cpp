@@ -300,6 +300,13 @@ Result<ColorSpace> ColorSpace::fromIccProfile(std::string_view name, std::span<c
     if (!parsed) {
         return parsed.error();
     }
+    if (parsed->cmyk) { // lcms2 reads the rest, before the space is created
+        const auto space = detail::cmykProfileSpace(name, profile.first(parsed->size));
+        if (!space) {
+            return space.error();
+        }
+        return ColorSpace(*space);
+    }
     // Everything is checked before anything is created, so a rejected profile
     // registers no curve and no space.
     const std::size_t curves = parsed->gray ? 1 : 3;
@@ -337,6 +344,11 @@ Result<ColorSpace> ColorSpace::fromIccProfile(std::string_view name, std::span<c
 ColorSpace ColorSpace::withTransfer(TransferFunction trc) const
 {
     return ColorSpace(&detail::spaceWithTrc(*descriptor_, trc.descriptor()));
+}
+
+bool ColorSpace::hasCmykProfile() const noexcept
+{
+    return descriptor_->cmyk_profile != nullptr;
 }
 
 std::string_view ColorSpace::name() const noexcept

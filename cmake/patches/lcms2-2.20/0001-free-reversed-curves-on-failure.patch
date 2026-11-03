@@ -1,0 +1,19 @@
+Free the reversed curves when one reversal fails
+
+BuildRGBOutputMatrixShaper returned without freeing the reversed tone
+curves already built when a later cmsReverseToneCurve call failed (for
+example on an allocation failure). cmsFreeToneCurveTriple skips null
+entries, so it frees exactly the curves that were built.
+
+diff --git a/src/cmsio1.c b/src/cmsio1.c
+index 0989826..7b049b3 100644
+--- a/src/cmsio1.c
++++ b/src/cmsio1.c
+@@ -484,6 +484,7 @@ cmsPipeline* BuildRGBOutputMatrixShaper(cmsHPROFILE hProfile)
+     InvShapes[2] = cmsReverseToneCurve(Shapes[2]);
+ 
+     if (!InvShapes[0] || !InvShapes[1] || !InvShapes[2]) {
++        cmsFreeToneCurveTriple(InvShapes);
+         return NULL;
+     }
+ 

@@ -15,9 +15,30 @@
 //   chromaroute_allocation_failure_tests concurrent-first-touch
 //       No failures: eight threads make the first registry calls of the
 //       process at the same time and must get the same interned descriptors.
+//
+// With lcms2, whose allocations go through the library's handler and its test
+// hooks (src/core/cmyk_profile.cpp), rather than operator new:
+//
+//   chromaroute_allocation_failure_tests lcms2-baseline <file>
+//       Writes how many lcms2 blocks a first use that succeeds at once leaves.
+//   chromaroute_allocation_failure_tests lcms2-first-touch <file>
+//       For n = 1, 2, ...: the n-th lcms2 allocation of the first use (its
+//       context and scRGB profile) fails. Each failure throws and leaves no
+//       lcms2 block behind; the retry that succeeds leaves the baseline.
+//   chromaroute_allocation_failure_tests lcms2-profile
+//       The same for opening a CMYK profile and for the transform between two
+//       profiles: each failure throws and leaves what was there before.
 
 #include <chromaroute/chromaroute.hpp>
 
+#if CHROMAROUTE_TEST_WITH_LCMS2
+#include "core/cmyk_profile.hpp"
+#include "support/naive_cmyk_profile.hpp"
+
+#include <fstream>
+#endif
+
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -232,6 +253,146 @@ int concurrentFirstTouchTest()
     return failures;
 }
 
+#if CHROMAROUTE_TEST_WITH_LCMS2
+
+int lcmsBaselineTest(const char* file)
+{
+    chromaroute::detail::prepareCmykProfiles();
+    const long live = chromaroute::detail::liveLcmsAllocations();
+    std::ofstream out(file);
+    out << live << '\n';
+    std::printf("  lcms2 blocks after a first use: %ld\n", live);
+    check(live > 0 && out.good(), "the baseline is recorded");
+    return failures;
+}
+
+int lcmsFirstTouchTest(const char* file)
+{
+    using namespace chromaroute::detail;
+    long baseline = -1;
+    std::ifstream in(file);
+    in >> baseline;
+    check(baseline > 0, "the baseline was recorded (allocation_failure_lcms2-baseline)");
+
+    int injected = 0;
+    int leaks = 0;
+    bool succeeded = false;
+    for (long n = 1; n <= 100000 && !succeeded; ++n) {
+        failLcmsAllocation(n);
+        bool threw = false;
+        try {
+            prepareCmykProfiles();
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        const bool reached = failLcmsAllocation(0) == 0;
+        check(threw == reached, "the first use throws exactly when an lcms2 allocation fails");
+        if (threw) {
+            ++injected;
+            if (liveLcmsAllocations() != 0 && ++leaks <= 3) {
+                std::printf("  allocation %ld failed: %ld lcms2 blocks left\n", n, liveLcmsAllocations());
+            }
+        }
+        succeeded = !threw;
+    }
+    check(leaks == 0, "a failed first use leaves no lcms2 block behind");
+    std::printf("  failed first uses injected: %d; after the retry %ld lcms2 blocks (baseline %ld)\n", injected,
+                liveLcmsAllocations(), baseline);
+    check(succeeded && injected >= 2, "the first use failed at every allocation, then succeeded");
+    check(liveLcmsAllocations() == baseline, "the successful retry leaves what a first success leaves");
+    prepareCmykProfiles();
+    check(liveLcmsAllocations() == baseline, "once made, the first use allocates nothing again");
+    const auto space =
+        chromaroute::ColorSpace::fromIccProfile("after-retry", chromaroute::test::naiveCmykProfile(2, 3).bytes());
+    check(space.has_value() && space->hasCmykProfile(), "a CMYK profile opens after the retry");
+    return failures;
+}
+
+int lcmsProfileTest()
+{
+    using chromaroute::ColorSpace;
+    using chromaroute::Converter;
+    using chromaroute::PixelFormat;
+    using namespace chromaroute::detail;
+    prepareCmykProfiles();
+
+    // Runs `attempt` with the n-th lcms2 allocation failing, for n = 1, 2, ...,
+    // until it needs fewer; returns how many attempts failed.
+    const auto exercise = [](const char* what, auto attempt) {
+        int injected = 0;
+        bool succeeded = false;
+        for (long n = 1; n <= 100000 && !succeeded; ++n) {
+            const long before = liveLcmsAllocations();
+            failLcmsAllocation(n);
+            bool threw = false;
+            bool made = false;
+            try {
+                made = attempt();
+            } catch (const std::bad_alloc&) {
+                threw = true;
+            }
+            const bool reached = failLcmsAllocation(0) == 0;
+            check(threw == reached, what);
+            if (threw) {
+                ++injected;
+                if (liveLcmsAllocations() != before) {
+                    std::printf("  %s, allocation %ld failed: %ld lcms2 blocks before, %ld after\n", what, n, before,
+                                liveLcmsAllocations());
+                }
+                check(liveLcmsAllocations() == before, "a failed attempt leaves the lcms2 blocks it found");
+            } else {
+                check(made, "the attempt succeeds once no allocation fails");
+            }
+            succeeded = !threw;
+        }
+        std::printf("  %s: %d failed attempts injected\n", what, injected);
+        check(succeeded && injected >= 2, "every allocation failed once, then the attempt succeeded");
+        return injected;
+    };
+
+    const auto first = chromaroute::test::naiveCmykProfile(2, 3).bytes();
+    exercise("opening a CMYK profile", [&] { return ColorSpace::fromIccProfile("oom-first", first).has_value(); });
+    check(ColorSpace::fromName("oom-first").has_value(), "the profile's space exists once, after the failures");
+
+    const auto second = ColorSpace::fromIccProfile("oom-second", chromaroute::test::naiveCmykProfile(2, 3, true).bytes());
+    check(second.has_value(), "a second profile opens");
+
+    // The same link made with no failure, as the reference: the same tables
+    // with a copyright tag added, so their bytes, and so their spaces, differ.
+    const std::vector<std::byte> copyright = {std::byte{'t'}, std::byte{'e'}, std::byte{'x'}, std::byte{'t'},
+                                              std::byte{0},   std::byte{0},   std::byte{0},   std::byte{0},
+                                              std::byte{'r'}, std::byte{0}};
+    check(ColorSpace::fromIccProfile("ref-first", chromaroute::test::naiveCmykProfile(2, 3).raw("cprt", copyright).bytes())
+                  .has_value() &&
+              ColorSpace::fromIccProfile("ref-second",
+                                         chromaroute::test::naiveCmykProfile(2, 3, true).raw("cprt", copyright).bytes())
+                  .has_value(),
+          "the reference profiles open");
+    const double inks[4] = {0.5, 0.0, 0.25, 0.25};
+    const auto convert = [&](const char* from, const char* to, double (&out)[4]) {
+        const auto converter = Converter::create(*PixelFormat::fromName(from), *PixelFormat::fromName(to));
+        return converter.has_value() &&
+               converter->process(std::as_bytes(std::span(inks)), std::as_writable_bytes(std::span(out)), 1).has_value();
+    };
+    double expected[4] = {};
+    check(convert("CMYK double-ref-first", "CMYK double-ref-second", expected), "the reference link converts");
+
+    const PixelFormat from = *PixelFormat::fromName("CMYK double-oom-first");
+    const PixelFormat to = *PixelFormat::fromName("CMYK double-oom-second");
+    exercise("linking two profiles", [&] { return Converter::create(from, to).has_value(); });
+    double out[4] = {-1, -1, -1, -1};
+    const bool converted = convert("CMYK double-oom-first", "CMYK double-oom-second", out);
+    const bool same = converted && std::equal(std::begin(out), std::end(out), std::begin(expected));
+    if (!same) {
+        std::printf("  after the failures C %g M %g Y %g K %g; with none C %g M %g Y %g K %g\n", out[0], out[1],
+                    out[2], out[3], expected[0], expected[1], expected[2], expected[3]);
+    }
+    check(same, "after the failures, the link converts exactly as one made with none");
+    return failures;
+}
+
+#endif
+
 } // namespace
 
 void* operator new(std::size_t size)
@@ -267,7 +428,7 @@ void operator delete[](void* p, std::size_t) noexcept
 int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // keep the progress if the process dies
-    const std::string_view mode = argc == 2 ? argv[1] : "";
+    const std::string_view mode = argc >= 2 ? argv[1] : "";
     int result = 2;
     if (mode == "first-touch") {
         result = firstTouchTest();
@@ -277,9 +438,17 @@ int main(int argc, char** argv)
         result = spaceVariantTest();
     } else if (mode == "concurrent-first-touch") {
         result = concurrentFirstTouchTest();
+#if CHROMAROUTE_TEST_WITH_LCMS2
+    } else if (mode == "lcms2-baseline" && argc == 3) {
+        result = lcmsBaselineTest(argv[2]);
+    } else if (mode == "lcms2-first-touch" && argc == 3) {
+        result = lcmsFirstTouchTest(argv[2]);
+    } else if (mode == "lcms2-profile") {
+        result = lcmsProfileTest();
+#endif
     } else {
         std::printf("usage: chromaroute_allocation_failure_tests first-touch|plan-cache|space-variant|"
-                    "concurrent-first-touch\n");
+                    "concurrent-first-touch|lcms2-baseline <file>|lcms2-first-touch <file>|lcms2-profile\n");
         return 2;
     }
     std::printf("%s: %s\n", std::string(mode).c_str(), result == 0 ? "PASS" : "FAIL");

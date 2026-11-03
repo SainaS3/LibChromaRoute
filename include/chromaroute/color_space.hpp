@@ -116,21 +116,30 @@ public:
     static Result<ColorSpace> fromRgbToXyz(std::string_view name, const Vector3& white_xyz,
                                               const Matrix3& rgb_to_xyz, TransferFunction red,
                                               TransferFunction green, TransferFunction blue);
-    // Creates (or finds) a space from an ICC profile (version 2 or 4) with an
-    // XYZ connection space. An RGB matrix/TRC profile gives fromRgbToXyz() with
+    // Creates (or finds) a space from an ICC profile (version 2 or 4). An RGB
+    // matrix/TRC profile with an XYZ connection space gives fromRgbToXyz() with
     // its colorants (rXYZ, gXYZ, bXYZ) as the matrix, its white point (wtpt)
     // and its tone curves (rTRC, gTRC, bTRC); a gray profile gives sRGB's
     // primaries with its gray curve (kTRC) on every channel. Lookup tables in a
-    // profile that also has a matrix are ignored. Errors: invalid_profile for
-    // malformed bytes, unsupported_profile for other profiles (lookup tables
-    // only, CMYK, Lab connection space). Checking stops at the first problem,
-    // so an unsupported profile is not necessarily valid otherwise.
+    // profile that also has a matrix are ignored. In a build with lcms2
+    // (CHROMAROUTE_WITH_LCMS2), a CMYK profile gives a space in which CMYK
+    // formats convert through the profile to and from linear sRGB, with
+    // relative colorimetric intent and black point compensation; RGB and gray
+    // formats in it are sRGB, and hasCmykProfile() is true. CMYK profiles are
+    // interned by their bytes. Errors: invalid_profile for malformed bytes,
+    // unsupported_profile for other profiles (lookup tables only, CMYK without
+    // lcms2, Lab connection space without CMYK). Checking stops at the first
+    // problem, so an unsupported profile is not necessarily valid otherwise.
     static Result<ColorSpace> fromIccProfile(std::string_view name, std::span<const std::byte> profile);
 
-    // The same primaries with another TRC on every channel.
+    // The same primaries with another TRC on every channel; for a CMYK
+    // profile's space with a TRC other than sRGB's, a space without the profile.
     // Both inputs are valid handles, so this cannot fail (it may throw
     // std::bad_alloc, like any creation).
     [[nodiscard]] ColorSpace withTransfer(TransferFunction trc) const;
+
+    // Whether the space comes from a CMYK ICC profile (fromIccProfile).
+    [[nodiscard]] bool hasCmykProfile() const noexcept;
 
     [[nodiscard]] std::string_view name() const noexcept;
     [[nodiscard]] Chromaticities chromaticities() const noexcept;

@@ -24,6 +24,9 @@ A C++20 static library for converting pixels between formats and color spaces.
   or an RGB or gray matrix/TRC ICC profile (versions 2 and 4). TRCs: linear, sRGB,
   gamma, ICC parametric curves and sampled tables. A format in another space is
   named `"R'G'B'A u8-DisplayP3"`.
+- **CMYK ICC profiles,** with the optional lcms2 back end (`CHROMAROUTE_WITH_LCMS2`,
+  off by default): a profile gives a space whose CMYK formats convert through it,
+  relative colorimetric with black point compensation, as in babl.
 - **API:** `PixelFormat`, `ColorSpace`, `TransferFunction`, `Converter`. Every pair of
   formats converts.
 - **Verified** against independent high-precision oracles, on the desktop and inside
@@ -41,10 +44,10 @@ chromaroute::Status status = converter->process(std::as_bytes(std::span(pixels))
 
 ## Not supported
 
-- ICC profiles built on lookup tables, CMYK profiles included (planned for M8b
-  through an optional lcms2 back end, decision D1), rendering intents,
-  black-point compensation and gamut mapping. Integer outputs clamp each channel
-  on its own.
+- RGB and gray ICC profiles built on lookup tables (planned for M8c), and CMYK
+  profiles in a build without lcms2. Rendering intents other than relative
+  colorimetric, black point compensation outside CMYK profiles, and gamut mapping.
+  Integer outputs clamp each channel on its own.
 - Absolute luminance and HDR transfer functions (PQ, HLG). The built-in Rec2020 uses
   the sRGB curve and ProPhoto a pure 1.8 power, as in babl, not BT.2020's OETF or
   ProPhoto's ROMM curve (open decision S6).
@@ -82,6 +85,15 @@ Individual steps: `cmake --preset msvc-uwp-x64-debug`,
 
 `msvc-host-x64-*` and `msvc-host-arm64-*` presets build a plain desktop test runner
 for fast iteration. They are for development only and are not a deliverable.
+
+Every preset has an `-lcms2` twin (for example `msvc-uwp-x64-debug-lcms2`) that turns
+on `CHROMAROUTE_WITH_LCMS2`. Its first configure downloads Little CMS 2.20 (MIT
+license, about 5.5 MB) from its GitHub release and checks it against a pinned
+SHA-256 (decision P5); lcms2 is then built from source as part of the build, with
+two fixes for its allocation-failure paths applied by git from
+`cmake/patches/lcms2-2.20` (drafted for upstream in `docs/upstream/`), so these
+presets need git on the `PATH`. Each new build tree downloads lcms2 again; there
+is no shared download cache.
 
 If the checkout is on a drive without ownership metadata (exFAT), git needs
 `git config --global --add safe.directory <path>`.

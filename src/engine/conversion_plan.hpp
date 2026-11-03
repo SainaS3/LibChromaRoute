@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/cmyk_profile.hpp"
 #include "core/descriptors.hpp"
 
 #include <array>
@@ -18,9 +19,10 @@ namespace chromaroute::detail {
 // L*a*b* between Lab and LCH); one 3x3 matrix or a luminance between hubs;
 // then the reverse on the destination side (encode, associate, R~G~B~ ->
 // Y'CbCr, HSL, HSV or HCY) and pack. CMYK is on the RGB side, in linear scRGB
-// whatever the format's space (S5); between two CMYK models only the inks'
-// form and association change. Steps that cancel out are omitted; identical
-// formats copy bytes.
+// whatever the format's space (S5), through the space's profile when it has
+// one (A11); between two CMYK models only the inks' form and association
+// change, unless the two spaces have different profiles. Steps that cancel
+// out are omitted; identical formats copy bytes.
 class ConversionPlan {
 public:
     // Shared, cached plan for the pair; nullptr when the pair is unsupported.
@@ -88,6 +90,11 @@ public:
         bool destination_cmyk;        // CMYK destination: linear scRGB -> inks (then associated) last
         bool destination_ink;
         bool invert_cmyk;             // Hub::cmyk between ink and inverted forms: x -> 1 - x
+        // CMYK in a profile's space (A11): inks <-> linear scRGB through the
+        // profile, a chunk at once, instead of the naive formula.
+        const CmykProfile* source_profile;
+        const CmykProfile* destination_profile;
+        CmykLinkPtr link; // Hub::cmyk between two profiles' spaces: inks -> inks through both
         bool associate;    // multiply destination colors by the used alpha
         bool nonfinite_alpha_to_nan; // kept association: colors x (used alpha / used alpha)
     };

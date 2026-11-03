@@ -5,6 +5,7 @@
 // checked against the oracles elsewhere.
 
 #include "support/icc_writer.hpp"
+#include "support/naive_cmyk_profile.hpp"
 #include "support/test_harness.hpp"
 
 #include "core/descriptors.hpp"
@@ -154,6 +155,27 @@ CR_TEST(direct_equals_staged_between_profile_spaces)
         CR_CHECK(stagedMismatches("-" + std::string(from->name()), "-" + std::string(to->name()), cr_context.out()) == 0);
     }
 }
+
+#if CHROMAROUTE_TEST_WITH_LCMS2
+CR_TEST(direct_equals_staged_with_cmyk_profile_spaces)
+{
+    // CMYK profiles' spaces (decision A11): from one to sRGB, from sRGB to it,
+    // and between two different profiles, whose CMYK formats convert from one
+    // profile to the other.
+    const auto first = chromaroute::ColorSpace::fromIccProfile(
+        "pipeline-cmyk", chromaroute::test::naiveCmykProfile(5, 9).bytes());
+    const auto second = chromaroute::ColorSpace::fromIccProfile(
+        "pipeline-cmyk-swapped", chromaroute::test::naiveCmykProfile(5, 9, true).bytes());
+    CR_CHECK(first.has_value() && second.has_value());
+    if (first && second) {
+        const std::string a = "-" + std::string(first->name());
+        const std::string b = "-" + std::string(second->name());
+        CR_CHECK(stagedMismatches(a, "", cr_context.out()) == 0);
+        CR_CHECK(stagedMismatches("", a, cr_context.out()) == 0);
+        CR_CHECK(stagedMismatches(a, b, cr_context.out()) == 0);
+    }
+}
+#endif
 
 CR_TEST(every_format_round_trips_through_its_model_in_double)
 {

@@ -1,5 +1,7 @@
 #include "core/icc_profile.hpp"
 
+#include "core/cmyk_profile.hpp"
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -244,22 +246,26 @@ Result<IccMatrixProfile> readIccMatrixProfile(std::span<const std::byte> profile
         return malformed("unknown color space " + text(color_space));
     }
     const bool gray = color_space == signature("GRAY");
-    if (!gray && color_space != signature("RGB ")) {
-        return unsupported("color space " + text(color_space) + " (RGB and GRAY are supported)");
+    // CMYK profiles are built on lookup tables, which lcms2 reads (decision
+    // A11); ICC.1 defines them for the four classes left at this point.
+    const bool cmyk = color_space == signature("CMYK") && cmykProfilesAvailable();
+    if (!gray && !cmyk && color_space != signature("RGB ")) {
+        return unsupported("color space " + text(color_space) + " (RGB and GRAY are supported" +
+                           (cmykProfilesAvailable() ? ", and CMYK)" : "; CMYK needs a build with lcms2)"));
     }
     // ICC.1 defines three-component matrix/TRC profiles for the input and
     // display classes, and monochrome ones for the output class too; the other
     // classes are built on lookup tables.
     const bool matrix_class = device_class == signature("scnr") || device_class == signature("mntr");
-    if (!matrix_class && !(gray && device_class == signature("prtr"))) {
+    if (!cmyk && !matrix_class && !(gray && device_class == signature("prtr"))) {
         return unsupported((gray ? "GRAY" : "RGB") + std::string(" profile of class ") + text(device_class) +
                            " (matrix/TRC data is defined for input and display profiles, and gray also for output)");
     }
     const std::uint32_t pcs = bytes.u32(20);
-    if (pcs == signature("Lab ")) {
+    if (pcs == signature("Lab ") && !cmyk) {
         return unsupported("Lab connection space (matrix/TRC profiles use XYZ)");
     }
-    if (pcs != signature("XYZ ")) {
+    if (pcs != signature("XYZ ") && pcs != signature("Lab ")) {
         return malformed("connection space " + text(pcs));
     }
 
@@ -277,9 +283,14 @@ Result<IccMatrixProfile> readIccMatrixProfile(std::span<const std::byte> profile
         }
         tags.push_back(tag);
     }
+    IccMatrixProfile result;
+    if (cmyk) {
+        result.cmyk = true;
+        result.size = declared;
+        return result;
+    }
     const Profile p(bytes, std::move(tags));
 
-    IccMatrixProfile result;
     result.gray = gray;
     if (gray) {
         auto k = p.curve(signature("kTRC"));

@@ -2,6 +2,7 @@
 set(CHROMAROUTE_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/support/test_harness.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/cie_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/cmyk_profile_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/cmyk_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_math_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/color_semantics_tests.cpp
@@ -29,6 +30,9 @@ function(chromaroute_add_test_runner target)
     CHROMAROUTE_TEST_EXPECTED_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     CHROMAROUTE_TEST_EXPECTED_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     CHROMAROUTE_TEST_EXPECTED_VERSION_PATCH=${PROJECT_VERSION_PATCH})
+  if(CHROMAROUTE_WITH_LCMS2)
+    target_compile_definitions(${target} PRIVATE CHROMAROUTE_TEST_WITH_LCMS2=1)
+  endif()
   chromaroute_apply_compiler_options(${target})
 endfunction()
 
@@ -49,6 +53,34 @@ else()
   foreach(mode first-touch plan-cache space-variant concurrent-first-touch)
     add_test(NAME allocation_failure_${mode} COMMAND chromaroute_allocation_failure_tests ${mode})
   endforeach()
+  if(CHROMAROUTE_WITH_LCMS2)
+    # lcms2 allocates through the library's handler, whose test hooks are
+    # internal; the baseline is measured in a process of its own.
+    target_include_directories(chromaroute_allocation_failure_tests PRIVATE
+      ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/tests)
+    target_compile_definitions(chromaroute_allocation_failure_tests PRIVATE CHROMAROUTE_TEST_WITH_LCMS2=1)
+    set(lcms2_baseline ${CMAKE_CURRENT_BINARY_DIR}/lcms2_baseline.txt)
+    add_test(NAME allocation_failure_lcms2-baseline
+      COMMAND chromaroute_allocation_failure_tests lcms2-baseline ${lcms2_baseline})
+    set_tests_properties(allocation_failure_lcms2-baseline PROPERTIES FIXTURES_SETUP lcms2_baseline)
+    add_test(NAME allocation_failure_lcms2-first-touch
+      COMMAND chromaroute_allocation_failure_tests lcms2-first-touch ${lcms2_baseline})
+    set_tests_properties(allocation_failure_lcms2-first-touch PROPERTIES FIXTURES_REQUIRED lcms2_baseline)
+    add_test(NAME allocation_failure_lcms2-profile COMMAND chromaroute_allocation_failure_tests lcms2-profile)
+
+    # The patches applied to lcms2, each checked through lcms2's own API at a
+    # failure path the library's flows never reach; also the upstream reproducer.
+    add_executable(chromaroute_lcms2_patch_tests host/lcms2_patch_tests.c)
+    target_link_libraries(chromaroute_lcms2_patch_tests PRIVATE lcms2)
+    if(MSVC)
+      target_compile_options(chromaroute_lcms2_patch_tests PRIVATE /W4 /WX /utf-8)
+    else()
+      target_compile_options(chromaroute_lcms2_patch_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    foreach(mode curves matrix)
+      add_test(NAME lcms2_patch_${mode} COMMAND chromaroute_lcms2_patch_tests ${mode})
+    endforeach()
+  endif()
 
   # Every binary32 input of the R1 encoder; minutes in Debug, so Release only.
   add_executable(chromaroute_exhaustive_tests exhaustive/r1_encode_exhaustive.cpp)

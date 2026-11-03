@@ -89,6 +89,52 @@
       "displayName": "Host Win32 ARM64 Release (development only, not a deliverable)",
       "inherits": "msvc-arm64-base",
       "cacheVariables": { "CMAKE_CONFIGURATION_TYPES": "Release" }
+    },
+    {
+      "name": "lcms2-base",
+      "hidden": true,
+      "description": "With the optional lcms2 back end for CMYK ICC profiles (decisions D1, P5).",
+      "cacheVariables": { "CHROMAROUTE_WITH_LCMS2": "ON" }
+    },
+    {
+      "name": "msvc-uwp-x64-debug-lcms2",
+      "displayName": "UWP x64 Debug (MSVC) with lcms2",
+      "inherits": ["msvc-uwp-x64-debug", "lcms2-base"]
+    },
+    {
+      "name": "msvc-uwp-x64-release-lcms2",
+      "displayName": "UWP x64 Release (MSVC) with lcms2",
+      "inherits": ["msvc-uwp-x64-release", "lcms2-base"]
+    },
+    {
+      "name": "msvc-uwp-arm64-debug-lcms2",
+      "displayName": "UWP ARM64 Debug (MSVC) with lcms2",
+      "inherits": ["msvc-uwp-arm64-debug", "lcms2-base"]
+    },
+    {
+      "name": "msvc-uwp-arm64-release-lcms2",
+      "displayName": "UWP ARM64 Release (MSVC) with lcms2",
+      "inherits": ["msvc-uwp-arm64-release", "lcms2-base"]
+    },
+    {
+      "name": "msvc-host-x64-debug-lcms2",
+      "displayName": "Host Win32 x64 Debug (development only, not a deliverable) with lcms2",
+      "inherits": ["msvc-host-x64-debug", "lcms2-base"]
+    },
+    {
+      "name": "msvc-host-x64-release-lcms2",
+      "displayName": "Host Win32 x64 Release (development only, not a deliverable) with lcms2",
+      "inherits": ["msvc-host-x64-release", "lcms2-base"]
+    },
+    {
+      "name": "msvc-host-arm64-debug-lcms2",
+      "displayName": "Host Win32 ARM64 Debug (development only, not a deliverable) with lcms2",
+      "inherits": ["msvc-host-arm64-debug", "lcms2-base"]
+    },
+    {
+      "name": "msvc-host-arm64-release-lcms2",
+      "displayName": "Host Win32 ARM64 Release (development only, not a deliverable) with lcms2",
+      "inherits": ["msvc-host-arm64-release", "lcms2-base"]
     }
   ],
   "buildPresets": [
@@ -99,7 +145,15 @@
     { "name": "msvc-host-x64-debug", "configurePreset": "msvc-host-x64-debug", "configuration": "Debug" },
     { "name": "msvc-host-x64-release", "configurePreset": "msvc-host-x64-release", "configuration": "Release" },
     { "name": "msvc-host-arm64-debug", "configurePreset": "msvc-host-arm64-debug", "configuration": "Debug" },
-    { "name": "msvc-host-arm64-release", "configurePreset": "msvc-host-arm64-release", "configuration": "Release" }
+    { "name": "msvc-host-arm64-release", "configurePreset": "msvc-host-arm64-release", "configuration": "Release" },
+    { "name": "msvc-uwp-x64-debug-lcms2", "configurePreset": "msvc-uwp-x64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-uwp-x64-release-lcms2", "configurePreset": "msvc-uwp-x64-release-lcms2", "configuration": "Release" },
+    { "name": "msvc-uwp-arm64-debug-lcms2", "configurePreset": "msvc-uwp-arm64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-uwp-arm64-release-lcms2", "configurePreset": "msvc-uwp-arm64-release-lcms2", "configuration": "Release" },
+    { "name": "msvc-host-x64-debug-lcms2", "configurePreset": "msvc-host-x64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-host-x64-release-lcms2", "configurePreset": "msvc-host-x64-release-lcms2", "configuration": "Release" },
+    { "name": "msvc-host-arm64-debug-lcms2", "configurePreset": "msvc-host-arm64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-host-arm64-release-lcms2", "configurePreset": "msvc-host-arm64-release-lcms2", "configuration": "Release" }
   ],
   "testPresets": [
     {
@@ -115,7 +169,15 @@
     { "name": "msvc-host-x64-debug", "inherits": "test-base", "configurePreset": "msvc-host-x64-debug", "configuration": "Debug" },
     { "name": "msvc-host-x64-release", "inherits": "test-base", "configurePreset": "msvc-host-x64-release", "configuration": "Release" },
     { "name": "msvc-host-arm64-debug", "inherits": "test-base", "configurePreset": "msvc-host-arm64-debug", "configuration": "Debug" },
-    { "name": "msvc-host-arm64-release", "inherits": "test-base", "configurePreset": "msvc-host-arm64-release", "configuration": "Release" }
+    { "name": "msvc-host-arm64-release", "inherits": "test-base", "configurePreset": "msvc-host-arm64-release", "configuration": "Release" },
+    { "name": "msvc-uwp-x64-debug-lcms2", "inherits": "test-base", "configurePreset": "msvc-uwp-x64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-uwp-x64-release-lcms2", "inherits": "test-base", "configurePreset": "msvc-uwp-x64-release-lcms2", "configuration": "Release" },
+    { "name": "msvc-uwp-arm64-debug-lcms2", "inherits": "test-base", "configurePreset": "msvc-uwp-arm64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-uwp-arm64-release-lcms2", "inherits": "test-base", "configurePreset": "msvc-uwp-arm64-release-lcms2", "configuration": "Release" },
+    { "name": "msvc-host-x64-debug-lcms2", "inherits": "test-base", "configurePreset": "msvc-host-x64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-host-x64-release-lcms2", "inherits": "test-base", "configurePreset": "msvc-host-x64-release-lcms2", "configuration": "Release" },
+    { "name": "msvc-host-arm64-debug-lcms2", "inherits": "test-base", "configurePreset": "msvc-host-arm64-debug-lcms2", "configuration": "Debug" },
+    { "name": "msvc-host-arm64-release-lcms2", "inherits": "test-base", "configurePreset": "msvc-host-arm64-release-lcms2", "configuration": "Release" }
   ],
   "workflowPresets": [
     {

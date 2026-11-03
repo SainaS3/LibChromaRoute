@@ -33,10 +33,15 @@ struct IccMatrixProfile {
     Matrix3 rgb_to_xyz{};        // RGB: the colorants rXYZ, gXYZ, bXYZ as columns
     Vector3 white{};             // RGB: the media white point (wtpt)
     std::array<IccCurve, 3> trc; // RGB: rTRC, gTRC, bTRC; gray: kTRC first
+    // A CMYK profile, in a build that reads them (core/cmyk_profile.hpp):
+    // only its header and tag table are checked here, lcms2 reads the rest.
+    bool cmyk = false;
+    std::size_t size = 0; // the declared size: the bytes that belong to the profile
 };
 
 // invalid_profile for malformed bytes; unsupported_profile for valid profiles
-// without RGB or gray matrix/TRC data.
+// without RGB or gray matrix/TRC data, other than CMYK profiles in a build
+// that reads them.
 [[nodiscard]] Result<IccMatrixProfile> readIccMatrixProfile(std::span<const std::byte> profile);
 
 } // namespace chromaroute::detail

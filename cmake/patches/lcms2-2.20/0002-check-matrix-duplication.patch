@@ -1,0 +1,33 @@
+Check both allocations when duplicating a matrix stage
+
+MatrixElemDup did not check _cmsDupMem for the matrix or its optional
+offset, so a failed allocation produced a stage with missing data that
+EvaluateMatrix later dereferenced. A failure now frees the partial copy
+and returns NULL, which cmsStageDup already handles by freeing the stage.
+
+diff --git a/src/cmslut.c b/src/cmslut.c
+index f34496c..91a8f54 100644
+--- a/src/cmslut.c
++++ b/src/cmslut.c
+@@ -350,12 +350,20 @@ void* MatrixElemDup(cmsStage* mpe)
+     sz = mpe ->InputChannels * mpe ->OutputChannels;
+ 
+     NewElem ->Double = (cmsFloat64Number*) _cmsDupMem(mpe ->ContextID, Data ->Double, sz * sizeof(cmsFloat64Number)) ;
++    if (NewElem ->Double == NULL) goto Error;
+ 
+-    if (Data ->Offset)
++    if (Data ->Offset) {
+         NewElem ->Offset = (cmsFloat64Number*) _cmsDupMem(mpe ->ContextID,
+                                                 Data ->Offset, mpe -> OutputChannels * sizeof(cmsFloat64Number)) ;
++        if (NewElem ->Offset == NULL) goto Error;
++    }
+ 
+     return (void*) NewElem;
++
++Error:
++    if (NewElem ->Double) _cmsFree(mpe ->ContextID, NewElem ->Double);
++    _cmsFree(mpe ->ContextID, NewElem);
++    return NULL;
+ }
+ 
+ 

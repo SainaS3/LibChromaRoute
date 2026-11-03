@@ -58,6 +58,54 @@ public:
         return raw(sig, d);
     }
 
+    // lut16Type ('mft2', ICC.1 10.10): `inputs` channels to `outputs`, an
+    // identity matrix and identity input and output tables (2 entries), and a
+    // CLUT of `grid` points per input. `node` gets a node's inputs in [0, 1]
+    // (the first input varying slowest) and returns its `outputs` values in
+    // [0, 1], stored as uInt16.
+    template <typename Node>
+    IccWriter& lut16(const char* sig, std::size_t inputs, std::size_t outputs, std::size_t grid, Node node)
+    {
+        std::vector<std::byte> d = typed("mft2");
+        d.push_back(std::byte{static_cast<unsigned char>(inputs)});
+        d.push_back(std::byte{static_cast<unsigned char>(outputs)});
+        d.push_back(std::byte{static_cast<unsigned char>(grid)});
+        d.push_back(std::byte{0});
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                put32(d, static_cast<std::uint32_t>(r == c ? 65536 : 0));
+            }
+        }
+        put16(d, 2);
+        put16(d, 2);
+        for (std::size_t i = 0; i < inputs; ++i) {
+            put16(d, 0);
+            put16(d, 65535);
+        }
+        std::size_t nodes = 1;
+        for (std::size_t i = 0; i < inputs; ++i) {
+            nodes *= grid;
+        }
+        std::vector<double> at(inputs);
+        for (std::size_t n = 0; n < nodes; ++n) {
+            std::size_t rest = n;
+            for (std::size_t i = inputs; i-- > 0;) {
+                at[i] = static_cast<double>(rest % grid) / static_cast<double>(grid - 1);
+                rest /= grid;
+            }
+            const std::vector<double> values = node(at);
+            for (std::size_t o = 0; o < outputs; ++o) {
+                const double v = values[o] < 0.0 ? 0.0 : values[o] > 1.0 ? 1.0 : values[o];
+                put16(d, static_cast<std::uint16_t>(std::lround(v * 65535.0)));
+            }
+        }
+        for (std::size_t o = 0; o < outputs; ++o) {
+            put16(d, 0);
+            put16(d, 65535);
+        }
+        return raw(sig, d);
+    }
+
     IccWriter& raw(const char* sig, const std::vector<std::byte>& data)
     {
         tags_.push_back({sig, data});

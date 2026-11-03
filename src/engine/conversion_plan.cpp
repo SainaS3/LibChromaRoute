@@ -316,11 +316,27 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // Between two CMYK models the inks never pass through RGB, which at K = 1
     // would lose them: within one model only the type changes; otherwise they
     // are un-associated, change form when one side is inverted, and associated.
+    // Between the spaces of two different profiles they go from one profile to
+    // the other, as in babl (A11); with one profile or none they stay the same
+    // inks.
+    const CmykProfile* from_profile = from_cmyk ? source.space->cmyk_profile : nullptr;
+    const CmykProfile* to_profile = to_cmyk ? destination.space->cmyk_profile : nullptr;
     if (from_cmyk && to_cmyk) {
         steps.hub = Hub::cmyk;
-        steps.unassociate = from.associated() && &from != &to;
-        steps.associate = to.associated() && &from != &to;
+        if (from_profile != nullptr && to_profile != nullptr && from_profile != to_profile) {
+            steps.link = linkCmykProfiles(*from_profile, *to_profile);
+            if (steps.link == nullptr) {
+                return nullptr;
+            }
+            steps.unassociate = from.associated();
+            steps.associate = to.associated();
+        } else {
+            steps.unassociate = from.associated() && &from != &to;
+            steps.associate = to.associated() && &from != &to;
+        }
         steps.invert_cmyk = from.family != to.family;
+        steps.source_ink = from.family == ColorFamily::cmyk;
+        steps.destination_ink = to.family == ColorFamily::cmyk;
         return std::make_shared<const ConversionPlan>(source, destination, steps);
     }
 
@@ -456,6 +472,8 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     steps.source_ink = from.family == ColorFamily::cmyk;
     steps.destination_cmyk = to_cmyk;
     steps.destination_ink = to.family == ColorFamily::cmyk;
+    steps.source_profile = from_profile;
+    steps.destination_profile = to_profile;
     return std::make_shared<const ConversionPlan>(source, destination, steps);
 }
 
@@ -508,6 +526,50 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
     const Vector3& w = steps_.weights;
     const Matrix3& m = steps_.matrix;
 
+    // CMYK through profiles (A11): lcms2 converts the chunk at once, so the
+    // source's inks are converted before the pixel loop, and the destination's
+    // linear scRGB is collected in it and converted after.
+    double profile_rgb[chunk_pixels * 3];
+    double profile_inks[chunk_pixels * 4];
+    const auto alphaOf = [&](std::size_t p) { return from.hasAlpha() ? in[p * in_stride + in_colors] : 1.0; };
+    // A source pixel's inks, un-associated, in ink form (1 = full ink).
+    const auto gatherInks = [&](std::size_t p) {
+        const double scale = steps_.unassociate ? usedAlpha(alphaOf(p)) : 1.0;
+        for (std::size_t k = 0; k < 4; ++k) {
+            const double v = steps_.unassociate ? in[p * in_stride + k] / scale : in[p * in_stride + k];
+            profile_inks[p * 4 + k] = steps_.source_ink ? v : 1.0 - v;
+        }
+    };
+    // Inks in ink form to a destination pixel: form, then association.
+    const auto storeInks = [&](std::size_t p) {
+        double* dst = out + p * out_stride;
+        const double scale = steps_.associate ? usedAlpha(alphaOf(p)) : 1.0;
+        for (std::size_t k = 0; k < 4; ++k) {
+            const double ink = profile_inks[p * 4 + k];
+            const double v = steps_.destination_ink ? ink : 1.0 - ink;
+            dst[k] = steps_.associate ? v * scale : v;
+        }
+        if (to.hasAlpha()) {
+            dst[4] = alphaOf(p);
+        }
+    };
+    if (steps_.link != nullptr) { // between two profiles' spaces
+        for (std::size_t p = 0; p < pixels; ++p) {
+            gatherInks(p);
+        }
+        cmykToCmyk(*steps_.link, profile_inks, profile_inks, pixels);
+        for (std::size_t p = 0; p < pixels; ++p) {
+            storeInks(p);
+        }
+        return;
+    }
+    if (steps_.source_profile != nullptr) {
+        for (std::size_t p = 0; p < pixels; ++p) {
+            gatherInks(p);
+        }
+        cmykToScrgb(*steps_.source_profile, profile_inks, profile_rgb, pixels);
+    }
+
     for (std::size_t p = 0; p < pixels; ++p) {
         const double* src = in + p * in_stride;
         double* dst = out + p * out_stride;
@@ -540,7 +602,10 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
             Vector3 encoded{};
             const double source_scale = steps_.unassociate ? usedAlpha(alpha) : 1.0;
             bool straight = !steps_.unassociate;
-            if (steps_.source_cmyk) {
+            if (steps_.source_profile != nullptr) {
+                encoded = {profile_rgb[p * 3], profile_rgb[p * 3 + 1], profile_rgb[p * 3 + 2]};
+                straight = true;
+            } else if (steps_.source_cmyk) {
                 InvertedCmyk inks{};
                 for (std::size_t k = 0; k < 4; ++k) {
                     const double ink = steps_.unassociate ? src[k] / source_scale : src[k];
@@ -605,7 +670,11 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
                 // Kept association: exactly 1 for finite alpha, NaN for NaN or +-Inf.
                 destination_scale = usedAlpha(alpha) / usedAlpha(alpha);
             }
-            if (steps_.destination_cmyk) { // linear scRGB to inks, then associate
+            if (steps_.destination_profile != nullptr) { // converted after the loop
+                profile_rgb[p * 3] = v[0];
+                profile_rgb[p * 3 + 1] = v[1];
+                profile_rgb[p * 3 + 2] = v[2];
+            } else if (steps_.destination_cmyk) { // linear scRGB to inks, then associate
                 const InvertedCmyk inverted = invertedCmykFromRgb(v);
                 for (std::size_t k = 0; k < 4; ++k) {
                     const double ink = steps_.destination_ink ? 1.0 - inverted[k] : inverted[k];
@@ -639,6 +708,12 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         }
         if (to.hasAlpha()) {
             dst[out_colors] = alpha;
+        }
+    }
+    if (steps_.destination_profile != nullptr) {
+        scrgbToCmyk(*steps_.destination_profile, profile_rgb, profile_inks, pixels);
+        for (std::size_t p = 0; p < pixels; ++p) {
+            storeInks(p);
         }
     }
 }

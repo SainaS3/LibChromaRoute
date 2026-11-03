@@ -1,5 +1,6 @@
 #include "core/descriptors.hpp"
 
+#include "core/cmyk_profile.hpp"
 #include "engine/color_math.hpp"
 
 #include <algorithm>
@@ -313,6 +314,7 @@ struct Registry {
     std::shared_mutex mutex;
     std::deque<TrcDescriptor> trcs;
     std::deque<SpaceDescriptor> spaces;
+    std::deque<CmykProfilePtr> cmyk_profiles; // owned here, referenced by their spaces
     std::vector<std::string> base_names; // reserved up front: never reallocates
     std::vector<FormatDescriptor> base_formats;
     std::unordered_map<std::string_view, const FormatDescriptor*> base_by_name;
@@ -384,7 +386,7 @@ struct Registry {
                                      const std::array<const TrcDescriptor*, 3>& trc)
     {
         for (const SpaceDescriptor& s : spaces) {
-            if (!s.from_matrix && same(s.chromaticities, c) && s.trc == trc) {
+            if (!s.from_matrix && s.cmyk_profile == nullptr && same(s.chromaticities, c) && s.trc == trc) {
                 return s; // interned by parameters; the name is ignored
             }
         }
@@ -417,6 +419,47 @@ struct Registry {
             stored_name = spaceName(name);
         }
         return spaces.emplace_back(SpaceDescriptor{std::move(stored_name), c, white, m, inverse(m), trc, true});
+    }
+
+    // A CMYK profile's space: sRGB's parameters, as in babl, and the profile.
+    // Interned by the profile's bytes. The profile is opened under the lock,
+    // so two threads never open the same one twice.
+    Result<const SpaceDescriptor*> addCmykSpace(std::string_view name, std::span<const std::byte> bytes)
+    {
+        for (const SpaceDescriptor& s : spaces) {
+            if (s.cmyk_profile != nullptr) {
+                const auto known = profileBytes(*s.cmyk_profile);
+                if (std::equal(known.begin(), known.end(), bytes.begin(), bytes.end())) {
+                    return &s;
+                }
+            }
+        }
+        auto opened = openCmykProfile(bytes);
+        if (!opened) {
+            return opened.error();
+        }
+        std::string stored_name;
+        if (name.empty()) {
+            std::uint64_t hash = 0xcbf29ce484222325u; // 64-bit FNV-1a of the bytes
+            for (std::byte b : bytes) {
+                hash = (hash ^ std::to_integer<std::uint64_t>(b)) * 0x100000001b3u;
+            }
+            char buffer[32];
+            std::snprintf(buffer, sizeof buffer, "cmyk-%016llx", static_cast<unsigned long long>(hash));
+            stored_name = buffer;
+        } else {
+            stored_name = spaceName(name);
+        }
+        // If publishing the space throws (std::bad_alloc), the profile goes too.
+        const CmykProfile& profile = *cmyk_profiles.emplace_back(std::move(*opened));
+        try {
+            const SpaceDescriptor& s = *srgb_space;
+            return &spaces.emplace_back(SpaceDescriptor{std::move(stored_name), s.chromaticities, s.white_xyz,
+                                                        s.rgb_to_xyz, s.xyz_to_rgb, s.trc, false, &profile});
+        } catch (...) {
+            cmyk_profiles.pop_back();
+            throw;
+        }
     }
 
     const SpaceDescriptor* spaceNamed(std::string_view name) const
@@ -680,6 +723,13 @@ const SpaceDescriptor& spaceWithTrc(const SpaceDescriptor& space, const TrcDescr
         return spaceFromMatrix("", space.white_xyz, space.rgb_to_xyz, all); // keep the exact matrix
     }
     return spaceFromChromaticities("", space.chromaticities, all);
+}
+
+Result<const SpaceDescriptor*> cmykProfileSpace(std::string_view name, std::span<const std::byte> profile)
+{
+    Registry& r = registry();
+    const std::unique_lock lock(r.mutex);
+    return r.addCmykSpace(name, profile);
 }
 
 } // namespace chromaroute::detail
