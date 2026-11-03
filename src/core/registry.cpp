@@ -2,6 +2,7 @@
 
 #include "engine/color_math.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -334,6 +335,51 @@ struct Registry {
         return trcs.emplace_back(TrcDescriptor{gammaName(gamma), TransferFunction::Kind::gamma, gamma});
     }
 
+    const TrcDescriptor& addParametric(const ParametricCurve& c)
+    {
+        const auto same_curve = [&](const ParametricCurve& o) {
+            return o.type == c.type && o.g == c.g && o.a == c.a && o.b == c.b && o.c == c.c && o.d == c.d &&
+                   o.e == c.e && o.f == c.f;
+        };
+        for (const TrcDescriptor& t : trcs) {
+            if (t.kind == TransferFunction::Kind::parametric && same_curve(t.curve)) {
+                return t;
+            }
+        }
+        // %.17g keeps every parameter distinct (s15.16 values among them).
+        char buffer[8 * 32];
+        std::snprintf(buffer, sizeof buffer, "para%d:%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g", c.type, c.g, c.a,
+                      c.b, c.c, c.d, c.e, c.f);
+        TrcDescriptor trc{buffer, TransferFunction::Kind::parametric, 0.0};
+        trc.curve = c;
+        return trcs.emplace_back(std::move(trc));
+    }
+
+    const TrcDescriptor& addSampled(std::span<const double> samples)
+    {
+        for (const TrcDescriptor& t : trcs) {
+            if (t.kind == TransferFunction::Kind::sampled && std::equal(t.samples.begin(), t.samples.end(),
+                                                                        samples.begin(), samples.end())) {
+                return t;
+            }
+        }
+        // Named by count and a 64-bit FNV-1a hash of the samples' bits; the
+        // curve itself is interned by its samples.
+        std::uint64_t hash = 0xcbf29ce484222325u;
+        for (double s : samples) {
+            const auto bits = std::bit_cast<std::uint64_t>(s);
+            for (int byte = 0; byte < 8; ++byte) {
+                hash = (hash ^ ((bits >> (8 * byte)) & 0xFF)) * 0x100000001b3u;
+            }
+        }
+        char buffer[64];
+        std::snprintf(buffer, sizeof buffer, "table%zu:%016llx", samples.size(), static_cast<unsigned long long>(hash));
+        TrcDescriptor trc{buffer, TransferFunction::Kind::sampled, 0.0};
+        trc.samples.assign(samples.begin(), samples.end());
+        trc.monotonic = std::is_sorted(trc.samples.begin(), trc.samples.end());
+        return trcs.emplace_back(std::move(trc));
+    }
+
     const SpaceDescriptor& addSpace(std::string_view name, const Chromaticities& c,
                                      const std::array<const TrcDescriptor*, 3>& trc)
     {
@@ -592,6 +638,20 @@ const TrcDescriptor& gammaTrc(double gamma)
     }
     const std::unique_lock lock(r.mutex);
     return r.addGamma(gamma);
+}
+
+const TrcDescriptor& parametricTrc(const ParametricCurve& curve)
+{
+    Registry& r = registry();
+    const std::unique_lock lock(r.mutex);
+    return r.addParametric(curve);
+}
+
+const TrcDescriptor& sampledTrc(std::span<const double> samples)
+{
+    Registry& r = registry();
+    const std::unique_lock lock(r.mutex);
+    return r.addSampled(samples);
 }
 
 const SpaceDescriptor& spaceFromChromaticities(std::string_view name, const Chromaticities& c,

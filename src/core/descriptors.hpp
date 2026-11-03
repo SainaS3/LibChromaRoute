@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace chromaroute::detail {
 
@@ -78,6 +79,9 @@ struct TrcDescriptor {
     std::string name; // name: "sRGB", "linear", "2.2", ...
     TransferFunction::Kind kind;
     double gamma;     // exponent for Kind::gamma, otherwise 0
+    ParametricCurve curve{};     // Kind::parametric; unused parameters 0
+    std::vector<double> samples; // Kind::sampled
+    bool monotonic = false;      // Kind::sampled: the samples never decrease
 };
 
 struct SpaceDescriptor {
@@ -164,6 +168,10 @@ struct FormatDescriptor {
 
 // Precondition: finite gamma > 0. Gammas within 0.01 of 1 return linearTrc().
 [[nodiscard]] const TrcDescriptor& gammaTrc(double gamma);
+// Precondition: a valid curve of type 1 to 4 (TransferFunction::parametric).
+[[nodiscard]] const TrcDescriptor& parametricTrc(const ParametricCurve& curve);
+// Precondition: 2 to 65536 finite samples.
+[[nodiscard]] const TrcDescriptor& sampledTrc(std::span<const double> samples);
 // Precondition: chromaticities give an invertible primaries matrix.
 [[nodiscard]] const SpaceDescriptor& spaceFromChromaticities(std::string_view name, const Chromaticities& c,
                                                                const std::array<const TrcDescriptor*, 3>& trc);

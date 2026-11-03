@@ -20,9 +20,10 @@ A C++20 static library for converting pixels between formats and color spaces.
     ([docs/model_coverage.md](docs/model_coverage.md)).
 - **Types:** `u8`, `u16`, `u32`, `half`, `float`, `double`.
 - **Color spaces:** sRGB, scRGB, Rec2020, DisplayP3, Adobish, ProPhoto, Apple,
-  ACEScg, ACES2065-1, plus spaces created from chromaticities or an RGB to XYZ matrix
-  with linear, sRGB or gamma TRCs. A format in another space is named
-  `"R'G'B'A u8-DisplayP3"`.
+  ACEScg, ACES2065-1, plus spaces created from chromaticities, an RGB to XYZ matrix,
+  or an RGB or gray matrix/TRC ICC profile (versions 2 and 4). TRCs: linear, sRGB,
+  gamma, ICC parametric curves and sampled tables. A format in another space is
+  named `"R'G'B'A u8-DisplayP3"`.
 - **API:** `PixelFormat`, `ColorSpace`, `TransferFunction`, `Converter`. Every pair of
   formats converts.
 - **Verified** against independent high-precision oracles, on the desktop and inside
@@ -40,9 +41,10 @@ chromaroute::Status status = converter->process(std::as_bytes(std::span(pixels))
 
 ## Not supported
 
-- ICC profiles (planned for M8), including profile-based CMYK (open decision D1),
-  rendering intents, black-point compensation and gamut mapping. Integer outputs
-  clamp each channel on its own.
+- ICC profiles built on lookup tables, CMYK profiles included (planned for M8b
+  through an optional lcms2 back end, decision D1), rendering intents,
+  black-point compensation and gamut mapping. Integer outputs clamp each channel
+  on its own.
 - Absolute luminance and HDR transfer functions (PQ, HLG). The built-in Rec2020 uses
   the sRGB curve and ProPhoto a pure 1.8 power, as in babl, not BT.2020's OETF or
   ProPhoto's ROMM curve (open decision S6).

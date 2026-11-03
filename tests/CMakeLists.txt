@@ -10,12 +10,14 @@ set(CHROMAROUTE_TEST_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/converter_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/half_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/hue_model_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/icc_profile_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/model_conversion_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/numeric_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/oklab_ycbcr_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/pipeline_property_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/pixel_format_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/srgb_r1_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/unit/transfer_curve_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/unit/version_tests.cpp)
 
 function(chromaroute_add_test_runner target)

@@ -18,6 +18,9 @@ enum class ErrorCode {
     buffer_too_small,
     size_overflow,
     overlapping_buffers,
+    invalid_profile,     // ICC profile bytes are malformed or truncated, or a tag is invalid
+    unsupported_profile, // an ICC profile that is not RGB or gray matrix/TRC (lookup tables, CMYK, Lab PCS);
+                         // checking stops there, so the rest of it is not necessarily valid
 };
 
 struct Error {

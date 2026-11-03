@@ -16,6 +16,7 @@ option(CHROMAROUTE_BUILD_TESTS "Build LibChromaRoute tests" ${PROJECT_IS_TOP_LEV
 add_library(chromaroute STATIC
   src/color_space.cpp
   src/converter.cpp
+  src/core/icc_profile.cpp
   src/core/registry.cpp
   src/engine/conversion_plan.cpp
   src/pixel_format.cpp

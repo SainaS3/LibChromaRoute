@@ -1416,8 +1416,204 @@ def write_cmyk_oracle(path: str) -> None:
     print(f"CMYK oracle: skipped {skipped} cases")
 
 
+# ---- Tone curves of ICC profiles (Milestone 8a): parametric and sampled ----------
+
+def s15_of(v: float) -> int:
+    return int(round(v * 65536))
+
+
+CURVE_PARAMETRIC = [  # (type, raw s15Fixed16 parameters g, a, b, c, d, e, f)
+    (1, [s15_of(2.4), s15_of(0.9), s15_of(0.1)]),
+    (2, [s15_of(2.2), s15_of(0.95), s15_of(0.05), s15_of(0.02)]),
+    (3, [s15_of(2.4), s15_of(1 / 1.055), s15_of(0.055 / 1.055), s15_of(1 / 12.92), s15_of(0.04045)]),
+    (4, [s15_of(2.6), s15_of(0.92), s15_of(0.08), s15_of(0.08), s15_of(0.1), s15_of(0.005), s15_of(0.001)]),
+]
+
+
+def curve_tables():
+    gamma18 = [round(65535 * (i / 255) ** 1.8) for i in range(256)]
+    srgb = []
+    for i in range(4096):
+        x = i / 4095
+        y = x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+        srgb.append(round(65535 * y))
+    flat = [0] * 8 + [round(65535 * ((i - 7) / 56) ** 2) for i in range(8, 64)]
+    wavy = [0, 4000, 9000, 15000, 14000, 20000, 26000, 30000, 29500, 36000, 42000, 47000, 52000, 58000, 62000, 65535]
+    return [gamma18, srgb, flat, wavy]
+
+
+def parametric_decode(kind, q, x):
+    """Y and a magnitude for the skip window, with q the exact parameters."""
+    g, a, b = q[0], q[1], q[2]
+    t = a * x + b
+    if t > 0:
+        power = Fraction(decimal(t) ** decimal(g))
+        power_mag = power * (1 + g * (abs(a * x) + abs(b)) / t)
+    else:
+        power, power_mag = Fraction(0), Fraction(1, 2**60)
+    if kind == 1:
+        return power, power_mag
+    if kind == 2:
+        return power + q[3], power_mag + abs(q[3])
+    if kind == 3:
+        return (power, power_mag) if x >= q[4] else (q[3] * x, abs(q[3] * x))
+    return (power + q[5], power_mag + abs(q[5])) if x >= q[4] else (q[3] * x + q[6], abs(q[3] * x) + abs(q[6]))
+
+
+def parametric_encode(kind, q, y):
+    """The inverse as the library defines it, and how close a branch decision
+    came (None when no branch was close)."""
+    g, a, b = q[0], q[1], q[2]
+    offset = q[3] if kind == 2 else q[5] if kind == 4 else 0
+    knee = -b / a if kind <= 2 else q[4]
+    v = y - offset
+    close = []
+    if v > 0 or (v == 0 and kind >= 3):
+        root = Fraction(decimal(v) ** (D(1) / decimal(g))) if v > 0 else Fraction(0)
+        x = (root - b) / a
+        close.append(abs(x - knee))
+        if x >= knee:
+            return x, (abs(root) + abs(b)) / a + 1, min(close)
+    if kind >= 3 and q[3] > 0:
+        x = (y - (q[6] if kind == 4 else 0)) / q[3]
+        close.append(abs(x - knee))
+        if x < knee:
+            return x, abs(x) + 1, min(close)
+    return knee, abs(knee) + 1, min(close) if close else None
+
+
+def table_decode(t, x):
+    n = len(t)
+    if x <= 0:
+        return t[0]
+    if x >= 1:
+        return t[-1]
+    pos = x * (n - 1)
+    i = min(int(pos), n - 2)
+    return t[i] + (pos - i) * (t[i + 1] - t[i])
+
+
+def table_encode(t, y):
+    n = len(t)
+    monotonic = all(t[i] <= t[i + 1] for i in range(n - 1))
+
+    def segment(i):
+        span = t[i + 1] - t[i]
+        return Fraction(i, n - 1) if span == 0 else (i + (y - t[i]) / span) / (n - 1)
+
+    if monotonic:
+        if y <= t[0]:
+            return Fraction(0)
+        if y > t[-1]:
+            return Fraction(t.index(t[-1]), n - 1)  # the first sample of a final plateau
+        k = next(k for k in range(1, n) if t[k] >= y)
+        return segment(k - 1)
+    for i in range(n - 1):
+        if min(t[i], t[i + 1]) <= y <= max(t[i], t[i + 1]):
+            return segment(i)
+    lo, hi = min(t), max(t)
+    return Fraction(t.index(lo if y < lo else hi), n - 1)
+
+
+def write_curve_oracle(path: str) -> None:
+    rng = Lcg(0x1CC0)
+    skipped = 0
+
+    def unit() -> float:
+        return struct.unpack("<f", struct.pack("<I", rng.next() >> 9 | 0x3F800000))[0] - 1.0
+
+    def to_f32(x: float) -> float:
+        return struct.unpack("<f", struct.pack("<f", x))[0]
+
+    def f32_or_skip_value(value, magnitude):
+        value = Fraction(value)
+        if value != 0 and abs(value) <= Fraction(magnitude) * Fraction(1, 2**40):
+            return None
+        return nearest_f32_or_skip(value, True, Fraction(magnitude))
+
+    tables_out = []
+    for kind, raw in CURVE_PARAMETRIC:
+        q = [Fraction(r, 65536) for r in raw] + [Fraction(0)] * (7 - len(raw))
+        dec_in, dec_out, enc_in, enc_out = [], [], [], []
+        # Each special input once (it may be skipped), then random ones.
+        # (Signed zeros are not rationals; the unit tests check them.)
+        specials = [0.0, 1.0, float(q[4]) if kind >= 3 else float(-q[2] / q[1])]
+        tried = 0
+        while len(dec_in) < 512:
+            x = to_f32(specials[tried] if tried < len(specials) else 1.5 * unit() - 0.25)
+            tried += 1
+            y, mag = parametric_decode(kind, q, Fraction(x))
+            t = q[1] * Fraction(x) + q[2]
+            bits = f32_or_skip_value(y, mag)
+            if bits is None or (t != 0 and abs(t) <= Fraction(1, 2**40)):
+                skipped += 1
+                continue
+            dec_in.append(f32_bits(x))
+            dec_out.append(bits)
+        while len(enc_in) < 512:
+            y = to_f32(1.2 * unit() - 0.1)
+            x, mag, close = parametric_encode(kind, q, Fraction(y))
+            bits = f32_or_skip_value(x, mag)
+            if bits is None or (close is not None and close <= mag * Fraction(1, 2**40)):
+                skipped += 1
+                continue
+            enc_in.append(f32_bits(y))
+            enc_out.append(bits)
+        tables_out.append((f"para{kind}", [kind] + [r & 0xFFFFFFFF for r in raw], dec_in, dec_out, enc_in, enc_out))
+
+    for index, entries in enumerate(curve_tables()):
+        t = [Fraction(e, 65535) for e in entries]
+        n = len(t)
+        monotonic = all(entries[i] <= entries[i + 1] for i in range(n - 1))
+        dec_in, dec_out, enc_in, enc_out = [], [], [], []
+        specials = [0.0, 1.0, -0.5, 1.5, 0.5, 1 / 3, 1 / (n - 1), 2 / (n - 1)]
+        tried = 0
+        while len(dec_in) < 512:
+            x = to_f32(specials[tried] if tried < len(specials) else 1.5 * unit() - 0.25)
+            tried += 1
+            y = table_decode(t, Fraction(x))
+            bits = f32_or_skip_value(y, 4)
+            if bits is None:
+                skipped += 1
+                continue
+            dec_in.append(f32_bits(x))
+            dec_out.append(bits)
+        while len(enc_in) < 512:
+            y = to_f32(1.2 * unit() - 0.1)
+            # In a table that falls somewhere, a value near a sample can switch
+            # segments under double rounding: too close to call.
+            near_sample = not monotonic and any(abs(Fraction(y) - v) <= Fraction(1, 2**40) for v in t)
+            x = table_encode(t, Fraction(y))
+            bits = f32_or_skip_value(x, 4)
+            if bits is None or near_sample:
+                skipped += 1
+                continue
+            enc_in.append(f32_bits(y))
+            enc_out.append(bits)
+        tables_out.append((f"table{index}", entries, dec_in, dec_out, enc_in, enc_out))
+
+    with open(path, "w", newline="\n") as f:
+        begin_header(f,
+                     "Generated by tools/oracle/generate_srgb_oracle.py; do not edit.\n"
+                     "ICC tone curves: parametric types 1 to 4 with s15Fixed16 parameters and\n"
+                     "uInt16 tables, decoded and inverted as exact rationals (powers and roots at\n"
+                     "60 digits); binary32 bit patterns.\n"
+                     f"Cases skipped as too close to call: {skipped}.",
+                     ["array", "cstdint"])
+        for name, definition, dec_in, dec_out, enc_in, enc_out in tables_out:
+            what = "type, then raw s15Fixed16 g, a, b, ..." if name.startswith("para") else "uInt16 entries"
+            f.write(u32_table(f"curve_{name}", what, definition))
+            f.write(u32_table(f"curve_{name}_decode_inputs", "encoded X (binary32 bits)", dec_in))
+            f.write(u32_table(f"curve_{name}_decode_f32", "linear Y (binary32 bits)", dec_out))
+            f.write(u32_table(f"curve_{name}_encode_inputs", "linear Y (binary32 bits)", enc_in))
+            f.write(u32_table(f"curve_{name}_encode_f32", "encoded X (binary32 bits)", enc_out))
+        end_header(f)
+    print(f"Tone curve oracle: skipped {skipped} cases")
+
+
 def main() -> None:
     out_dir = sys.argv[1]
+    write_curve_oracle(f"{out_dir}/curve_oracle_data.hpp")
     write_cmyk_oracle(f"{out_dir}/cmyk_oracle_data.hpp")
     write_hue_oracle(f"{out_dir}/hue_oracle_data.hpp")
     write_oklab_ycbcr_oracle(f"{out_dir}/oklab_ycbcr_oracle_data.hpp")

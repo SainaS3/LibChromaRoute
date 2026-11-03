@@ -4,12 +4,14 @@
 // double. These compare two routes through one engine; the values themselves are
 // checked against the oracles elsewhere.
 
+#include "support/icc_writer.hpp"
 #include "support/test_harness.hpp"
 
 #include "core/descriptors.hpp"
 
 #include <chromaroute/chromaroute.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -126,6 +128,31 @@ CR_TEST(direct_conversion_equals_conversion_through_destination_model_in_double)
 CR_TEST(direct_equals_staged_between_two_other_spaces)
 {
     CR_CHECK(stagedMismatches("-Rec2020", "-ProPhoto", cr_context.out()) == 0);
+}
+
+CR_TEST(direct_equals_staged_between_profile_spaces)
+{
+    // Spaces read from ICC profiles, a parametric curve on one side and a
+    // 1024-entry table on the other, so their rules (decode and encode within
+    // a model change, values kept within one model) are covered for every pair.
+    using chromaroute::test::IccWriter;
+    using chromaroute::test::s15;
+    const auto para = IccWriter::rgb([](IccWriter& w, const char* sig) {
+        w.para(sig, 3, {s15(2.4), s15(1 / 1.055), s15(0.055 / 1.055), s15(1 / 12.92), s15(0.04045)});
+    });
+    std::vector<std::uint16_t> table(1024);
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        table[i] = static_cast<std::uint16_t>(std::lround(65535.0 * std::pow(i / 1023.0, 1.8)));
+    }
+    const auto sampled = IccWriter::rgb([&](IccWriter& w, const char* sig) { w.curve(sig, table); });
+    // Spaces are interned by their parameters, so a name given here may lose to
+    // one given earlier for the same profile: use the names they have.
+    const auto from = chromaroute::ColorSpace::fromIccProfile("icc-para", para.bytes());
+    const auto to = chromaroute::ColorSpace::fromIccProfile("icc-table", sampled.bytes());
+    CR_CHECK(from.has_value() && to.has_value());
+    if (from && to) {
+        CR_CHECK(stagedMismatches("-" + std::string(from->name()), "-" + std::string(to->name()), cr_context.out()) == 0);
+    }
 }
 
 CR_TEST(every_format_round_trips_through_its_model_in_double)

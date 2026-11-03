@@ -411,8 +411,19 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     for (std::size_t c = 0; c < to_rgb_colors; ++c) {
         same_trcs = same_trcs && trcOf(from, from_space, from_rgb ? c : 0) == trcOf(to, to_space, c);
     }
-    const bool stay_encoded = same_trcs && !steps.apply_matrix && !steps.luminance && !steps.divide_luminance;
+    // Parametric and sampled curves can map several inputs to one value (a
+    // flat piece, a table's inputs outside [0, 1]), so their decode + encode is
+    // not the identity on every value: with them values stay encoded only
+    // within one model and space, where only the type changes.
+    bool many_to_one = false;
+    for (std::size_t c = 0; c < 3 && c < from.colorCount(); ++c) {
+        const TrcDescriptor* trc = trcOf(from, from_space, c);
+        many_to_one = many_to_one || (trc != nullptr && (trc->kind == TransferFunction::Kind::parametric ||
+                                                         trc->kind == TransferFunction::Kind::sampled));
+    }
     const bool type_only = &from == &to && &from_space == &to_space;
+    const bool stay_encoded = same_trcs && (!many_to_one || type_only) && !steps.apply_matrix && !steps.luminance &&
+                              !steps.divide_luminance;
     bool any_clamp = false;
     for (std::size_t c = 0; c < 3; ++c) {
         const TrcDescriptor* source_trc = c < from.colorCount() ? trcOf(from, from_space, c) : nullptr;
