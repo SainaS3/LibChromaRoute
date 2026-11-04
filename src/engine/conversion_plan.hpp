@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cmyk_profile.hpp"
+#include "core/device_profile.hpp"
 #include "core/descriptors.hpp"
 
 #include <array>
@@ -21,13 +21,22 @@ namespace chromaroute::detail {
 // Y'CbCr, HSL, HSV or HCY) and pack. CMYK is on the RGB side, in linear scRGB
 // whatever the format's space (S5), through the space's profile when it has
 // one (A11); between two CMYK models only the inks' form and association
-// change, unless the two spaces have different profiles. Steps that cancel
-// out are omitted; identical formats copy bytes.
+// change, unless the two spaces have different profiles. The encoded RGB and
+// gray models of an RGB or gray lookup-table profile's space are on the RGB
+// side too: the profile turns their device values into linear scRGB and back
+// (A12); between two formats of one such profile the device values are kept.
+// Steps that cancel out are omitted; identical formats copy bytes.
 class ConversionPlan {
 public:
     // Shared, cached plan for the pair; nullptr when the pair is unsupported.
     static std::shared_ptr<const ConversionPlan> get(const FormatDescriptor& source,
                                                      const FormatDescriptor& destination);
+
+    // Whether the pair needs to encode into a profile that has no table out of
+    // the connection space (an input-only profile, A12): get() then gives
+    // nullptr, and the error is the profile's.
+    [[nodiscard]] static bool encodesIntoInputOnlyProfile(const FormatDescriptor& source,
+                                                          const FormatDescriptor& destination) noexcept;
 
     // Preconditions (validated by Converter): both buffers hold pixel_count
     // pixels and do not overlap.
@@ -50,7 +59,8 @@ public:
         normalized, // XYZ normalized to the D50 white, when a side is Lab or LCH
         lab,        // CIE L*a*b* (between Lab and LCH, no XYZ round trip)
         same,       // the same CIE model on both sides: values are copied
-        cmyk,       // CMYK on both sides: inks only change convention and association
+        device,     // CMYK inks, or one profile's device values, on both sides: only
+                    // their convention and association change
     };
 
     // A model computed from R~G~B~ of its space (decision S4).
@@ -89,12 +99,15 @@ public:
         TildeModel destination_model; // from R~G~B~ last
         bool destination_cmyk;        // CMYK destination: linear scRGB -> inks (then associated) last
         bool destination_ink;
-        bool invert_cmyk;             // Hub::cmyk between ink and inverted forms: x -> 1 - x
-        // CMYK in a profile's space (A11): inks <-> linear scRGB through the
-        // profile, a chunk at once, instead of the naive formula.
-        const CmykProfile* source_profile;
-        const CmykProfile* destination_profile;
-        CmykLinkPtr link; // Hub::cmyk between two profiles' spaces: inks -> inks through both
+        bool invert_cmyk;             // Hub::device between ink and inverted forms: x -> 1 - x
+        // Device values through the format's profile, a chunk at once: CMYK
+        // inks in a CMYK profile's space instead of the naive formula (A11),
+        // encoded RGB or gray values in an RGB or gray profile's (A12).
+        const DeviceProfile* source_profile;
+        const DeviceProfile* destination_profile;
+        std::size_t source_channels;      // the profiles' device channels: 1, 3 or 4
+        std::size_t destination_channels;
+        DeviceLinkPtr link; // Hub::device between two CMYK profiles' spaces: inks -> inks through both
         bool associate;    // multiply destination colors by the used alpha
         bool nonfinite_alpha_to_nan; // kept association: colors x (used alpha / used alpha)
     };

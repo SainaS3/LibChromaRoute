@@ -7,6 +7,8 @@
 #include <chromaroute/color_space.hpp>
 #include <chromaroute/pixel_format.hpp>
 
+#include "core/device_profile.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -84,7 +86,6 @@ struct TrcDescriptor {
     bool monotonic = false;      // Kind::sampled: the samples never decrease
 };
 
-struct CmykProfile; // core/cmyk_profile.hpp
 
 struct SpaceDescriptor {
     std::string name;
@@ -94,9 +95,10 @@ struct SpaceDescriptor {
     Matrix3 xyz_to_rgb;
     std::array<const TrcDescriptor*, 3> trc;
     bool from_matrix;              // created by fromRgbToXyz
-    // A space from a CMYK ICC profile (decision A11): CMYK formats in it
-    // convert through the profile; otherwise it is sRGB, as in babl.
-    const CmykProfile* cmyk_profile = nullptr;
+    // A space from a lookup-table ICC profile: CMYK formats in a CMYK
+    // profile's space (A11), the encoded RGB or gray formats in an RGB or gray
+    // profile's (A12), convert through the profile; otherwise it is sRGB.
+    const DeviceProfile* device_profile = nullptr;
 
     [[nodiscard]] const Vector3& luminance() const noexcept { return rgb_to_xyz[1]; }
 };
@@ -185,8 +187,10 @@ struct FormatDescriptor {
                                                        const Matrix3& rgb_to_xyz,
                                                        const std::array<const TrcDescriptor*, 3>& trc);
 [[nodiscard]] const SpaceDescriptor& spaceWithTrc(const SpaceDescriptor& space, const TrcDescriptor& trc);
-// Precondition: a CMYK profile whose header and tag table are checked.
-// Interned by the profile's bytes; errors are the profile's (core/cmyk_profile.hpp).
-[[nodiscard]] Result<const SpaceDescriptor*> cmykProfileSpace(std::string_view name, std::span<const std::byte> profile);
+// Precondition: a lookup-table profile of `kind` whose header and tag table
+// are checked. Interned by the profile's bytes; errors are the profile's
+// (core/device_profile.hpp).
+[[nodiscard]] Result<const SpaceDescriptor*> deviceProfileSpace(std::string_view name, std::span<const std::byte> profile,
+                                                                DeviceKind kind);
 
 } // namespace chromaroute::detail

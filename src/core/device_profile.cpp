@@ -1,4 +1,4 @@
-#include "core/cmyk_profile.hpp"
+#include "core/device_profile.hpp"
 
 #if CHROMAROUTE_WITH_LCMS2
 #include "engine/color_math.hpp"
@@ -22,16 +22,17 @@ namespace chromaroute::detail {
 
 #if CHROMAROUTE_WITH_LCMS2
 
-struct CmykProfile {
+struct DeviceProfile {
     std::vector<std::byte> bytes;
+    DeviceKind kind = DeviceKind::cmyk;
     cmsHPROFILE profile = nullptr; // kept open for links to other profiles
     cmsHTRANSFORM to_rgb = nullptr;
-    cmsHTRANSFORM from_rgb = nullptr;
+    cmsHTRANSFORM from_rgb = nullptr; // nullptr for an RGB or gray profile without encoding (A12)
 };
 
-struct CmykLink {
+struct DeviceLink {
     cmsHTRANSFORM transform = nullptr;
-    ~CmykLink()
+    ~DeviceLink()
     {
         if (transform != nullptr) {
             cmsDeleteTransform(transform);
@@ -171,7 +172,8 @@ using CurveOwner = std::unique_ptr<cmsToneCurve, CurveFreer>;
 // What every profile needs: the library's lcms2 context, with the handlers
 // above, and scRGB as an lcms2 profile, holding the library's own exact
 // D50-adapted matrix for sRGB's primaries (N4) and linear curves, so lcms2
-// meets the RGB side of CMYK (S5) with the same numbers as the engine. Both
+// meets the engine's linear sRGB (the RGB side of CMYK, S5, and of every
+// lookup-table profile, A12) with the same numbers as the engine. Both
 // are made on first use and never destroyed (like the registry).
 struct Lcms {
     cmsContext context;
@@ -228,8 +230,26 @@ const Lcms& lcms()
     return instance;
 }
 
-// Relative colorimetric with black point compensation, as babl (A11).
+// Relative colorimetric with black point compensation, as babl (A11), for
+// every profile (A12).
 constexpr cmsUInt32Number transform_flags = cmsFLAGS_BLACKPOINTCOMPENSATION | cmsFLAGS_NOCACHE;
+
+// lcms2's double format for the device values, and the scale from this
+// library's convention to it: inks 0..1 here are 0..100 in lcms2.
+struct DeviceFormat {
+    cmsUInt32Number format;
+    double scale;
+};
+
+DeviceFormat deviceFormat(DeviceKind kind) noexcept
+{
+    switch (kind) {
+        case DeviceKind::gray: return {TYPE_GRAY_DBL, 1.0};
+        case DeviceKind::rgb: return {TYPE_RGB_DBL, 1.0};
+        case DeviceKind::cmyk: break;
+    }
+    return {TYPE_CMYK_DBL, 100.0};
+}
 
 // Whether the profile has a table lcms2 uses for relative colorimetric intent
 // in one direction: the float D2B1 or B2D1, else the 16-bit relative table,
@@ -244,7 +264,7 @@ bool hasRelativeTable(cmsHPROFILE p, bool to_pcs)
 }
 
 // lcms2 dereferences null transforms, so only what was built is released.
-void destroy(const CmykProfile& p) noexcept
+void destroy(const DeviceProfile& p) noexcept
 {
     if (p.to_rgb != nullptr) {
         cmsDeleteTransform(p.to_rgb);
@@ -267,9 +287,8 @@ bool finitePixel(const double* v, std::size_t count) noexcept
     return true;
 }
 
-// Runs a transform in blocks, scaling inks between 0..1 here and 0..100 in
-// lcms2's CMYK double format. Pixels with a non-finite input go to lcms2 as 0
-// and come back as NaN in every output.
+// Runs a transform in blocks, scaling the device values (deviceFormat). Pixels
+// with a non-finite input go to lcms2 as 0 and come back as NaN in every output.
 void run(cmsHTRANSFORM t, const double* in, std::size_t in_count, double in_scale, double* out, std::size_t out_count,
          double out_scale, std::size_t n) noexcept
 {
@@ -298,7 +317,7 @@ void run(cmsHTRANSFORM t, const double* in, std::size_t in_count, double in_scal
 
 } // namespace
 
-void CmykProfileDeleter::operator()(const CmykProfile* profile) const noexcept
+void DeviceProfileDeleter::operator()(const DeviceProfile* profile) const noexcept
 {
     if (profile != nullptr) {
         destroy(*profile);
@@ -306,12 +325,12 @@ void CmykProfileDeleter::operator()(const CmykProfile* profile) const noexcept
     }
 }
 
-bool cmykProfilesAvailable() noexcept
+bool deviceProfilesAvailable() noexcept
 {
     return true;
 }
 
-void prepareCmykProfiles()
+void prepareDeviceProfiles()
 {
     (void)lcms();
 }
@@ -326,55 +345,76 @@ long liveLcmsAllocations() noexcept
     return live_allocations.load();
 }
 
-Result<CmykProfilePtr> openCmykProfile(std::span<const std::byte> bytes)
+Result<DeviceProfilePtr> openDeviceProfile(std::span<const std::byte> bytes, DeviceKind kind)
 {
     const Lcms& l = lcms();
     // Owned until complete: on any early return or throw it releases what
     // lcms2 made for it.
-    std::unique_ptr<CmykProfile, CmykProfileDeleter> p(new CmykProfile{std::vector<std::byte>(bytes.begin(), bytes.end())});
+    std::unique_ptr<DeviceProfile, DeviceProfileDeleter> p(
+        new DeviceProfile{std::vector<std::byte>(bytes.begin(), bytes.end()), kind});
     beginCall();
     p->profile = cmsOpenProfileFromMemTHR(l.context, p->bytes.data(), static_cast<cmsUInt32Number>(p->bytes.size()));
     throwIfOutOfMemory();
     if (p->profile == nullptr) {
         return Error{ErrorCode::invalid_profile, "invalid ICC profile: " + lastMessage("lcms2 cannot read it")};
     }
-    if (!hasRelativeTable(p->profile, true) || !hasRelativeTable(p->profile, false)) {
+    const bool cmyk = kind == DeviceKind::cmyk;
+    if (cmyk && (!hasRelativeTable(p->profile, true) || !hasRelativeTable(p->profile, false))) {
         return Error{ErrorCode::unsupported_profile,
                      "unsupported ICC profile: a CMYK profile needs tables both ways (A2B0 or A2B1, and B2A0 or B2A1)"};
     }
-    p->to_rgb = cmsCreateTransformTHR(l.context, p->profile, TYPE_CMYK_DBL, l.scrgb, TYPE_RGB_DBL,
+    if (!hasRelativeTable(p->profile, true)) {
+        return Error{ErrorCode::unsupported_profile,
+                     "unsupported ICC profile: no table into the connection space (A2B0, A2B1 or D2B1)"};
+    }
+    // RGB and gray profiles may be input-only (A12): then nothing encodes.
+    const bool encodes = hasRelativeTable(p->profile, false);
+    const DeviceFormat device = deviceFormat(kind);
+    p->to_rgb = cmsCreateTransformTHR(l.context, p->profile, device.format, l.scrgb, TYPE_RGB_DBL,
                                       INTENT_RELATIVE_COLORIMETRIC, transform_flags);
-    if (p->to_rgb != nullptr) {
-        p->from_rgb = cmsCreateTransformTHR(l.context, l.scrgb, TYPE_RGB_DBL, p->profile, TYPE_CMYK_DBL,
+    if (p->to_rgb != nullptr && encodes) {
+        p->from_rgb = cmsCreateTransformTHR(l.context, l.scrgb, TYPE_RGB_DBL, p->profile, device.format,
                                             INTENT_RELATIVE_COLORIMETRIC, transform_flags);
     }
     throwIfOutOfMemory();
-    if (p->to_rgb == nullptr || p->from_rgb == nullptr) {
+    if (p->to_rgb == nullptr || (encodes && p->from_rgb == nullptr)) {
         return Error{ErrorCode::invalid_profile,
-                     "invalid ICC profile: " + lastMessage("lcms2 cannot build its CMYK transforms")};
+                     "invalid ICC profile: " + lastMessage("lcms2 cannot build its transforms")};
     }
-    return CmykProfilePtr(p.release());
+    return DeviceProfilePtr(p.release());
 }
 
-std::span<const std::byte> profileBytes(const CmykProfile& profile) noexcept
+std::span<const std::byte> profileBytes(const DeviceProfile& profile) noexcept
 {
     return profile.bytes;
 }
 
-void cmykToScrgb(const CmykProfile& profile, const double* inks, double* rgb, std::size_t n) noexcept
+DeviceKind profileKind(const DeviceProfile& profile) noexcept
 {
-    run(profile.to_rgb, inks, 4, 100.0, rgb, 3, 1.0, n);
+    return profile.kind;
 }
 
-void scrgbToCmyk(const CmykProfile& profile, const double* rgb, double* inks, std::size_t n) noexcept
+bool profileEncodes(const DeviceProfile& profile) noexcept
 {
-    run(profile.from_rgb, rgb, 3, 1.0, inks, 4, 0.01, n);
+    return profile.from_rgb != nullptr;
 }
 
-CmykLinkPtr linkCmykProfiles(const CmykProfile& from, const CmykProfile& to)
+void deviceToScrgb(const DeviceProfile& profile, const double* device, double* rgb, std::size_t n) noexcept
+{
+    const DeviceFormat f = deviceFormat(profile.kind);
+    run(profile.to_rgb, device, deviceChannels(profile.kind), f.scale, rgb, 3, 1.0, n);
+}
+
+void scrgbToDevice(const DeviceProfile& profile, const double* rgb, double* device, std::size_t n) noexcept
+{
+    const DeviceFormat f = deviceFormat(profile.kind);
+    run(profile.from_rgb, rgb, 3, 1.0, device, deviceChannels(profile.kind), 1.0 / f.scale, n);
+}
+
+DeviceLinkPtr linkCmykProfiles(const DeviceProfile& from, const DeviceProfile& to)
 {
     const Lcms& l = lcms();
-    auto link = std::make_shared<CmykLink>(); // releases the transform on a throw
+    auto link = std::make_shared<DeviceLink>(); // releases the transform on a throw
     beginCall();
     link->transform = cmsCreateTransformTHR(l.context, from.profile, TYPE_CMYK_DBL, to.profile, TYPE_CMYK_DBL,
                                             INTENT_RELATIVE_COLORIMETRIC, transform_flags);
@@ -385,27 +425,27 @@ CmykLinkPtr linkCmykProfiles(const CmykProfile& from, const CmykProfile& to)
     return link;
 }
 
-void cmykToCmyk(const CmykLink& link, const double* in, double* out, std::size_t n) noexcept
+void cmykToCmyk(const DeviceLink& link, const double* in, double* out, std::size_t n) noexcept
 {
     run(link.transform, in, 4, 100.0, out, 4, 0.01, n);
 }
 
-#else // Without lcms2 no CMYK profile opens, so the evaluators are never reached.
+#else // Without lcms2 no profile opens, so the evaluators are never reached.
 
-struct CmykProfile {};
-struct CmykLink {};
+struct DeviceProfile {};
+struct DeviceLink {};
 
-void CmykProfileDeleter::operator()(const CmykProfile* profile) const noexcept
+void DeviceProfileDeleter::operator()(const DeviceProfile* profile) const noexcept
 {
     delete profile;
 }
 
-bool cmykProfilesAvailable() noexcept
+bool deviceProfilesAvailable() noexcept
 {
     return false;
 }
 
-void prepareCmykProfiles() {}
+void prepareDeviceProfiles() {}
 
 long failLcmsAllocation(long) noexcept
 {
@@ -417,26 +457,36 @@ long liveLcmsAllocations() noexcept
     return 0;
 }
 
-Result<CmykProfilePtr> openCmykProfile(std::span<const std::byte>)
+Result<DeviceProfilePtr> openDeviceProfile(std::span<const std::byte>, DeviceKind)
 {
     return Error{ErrorCode::unsupported_profile,
-                 "unsupported ICC profile: CMYK profiles need a build with lcms2 (CHROMAROUTE_WITH_LCMS2)"};
+                 "unsupported ICC profile: lookup-table profiles need a build with lcms2 (CHROMAROUTE_WITH_LCMS2)"};
 }
 
-std::span<const std::byte> profileBytes(const CmykProfile&) noexcept
+std::span<const std::byte> profileBytes(const DeviceProfile&) noexcept
 {
     return {};
 }
 
-void cmykToScrgb(const CmykProfile&, const double*, double*, std::size_t) noexcept {}
-void scrgbToCmyk(const CmykProfile&, const double*, double*, std::size_t) noexcept {}
+DeviceKind profileKind(const DeviceProfile&) noexcept
+{
+    return DeviceKind::cmyk;
+}
 
-CmykLinkPtr linkCmykProfiles(const CmykProfile&, const CmykProfile&)
+bool profileEncodes(const DeviceProfile&) noexcept
+{
+    return false;
+}
+
+void deviceToScrgb(const DeviceProfile&, const double*, double*, std::size_t) noexcept {}
+void scrgbToDevice(const DeviceProfile&, const double*, double*, std::size_t) noexcept {}
+
+DeviceLinkPtr linkCmykProfiles(const DeviceProfile&, const DeviceProfile&)
 {
     return nullptr;
 }
 
-void cmykToCmyk(const CmykLink&, const double*, double*, std::size_t) noexcept {}
+void cmykToCmyk(const DeviceLink&, const double*, double*, std::size_t) noexcept {}
 
 #endif
 

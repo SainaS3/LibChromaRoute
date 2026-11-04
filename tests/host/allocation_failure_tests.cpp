@@ -17,7 +17,7 @@
 //       process at the same time and must get the same interned descriptors.
 //
 // With lcms2, whose allocations go through the library's handler and its test
-// hooks (src/core/cmyk_profile.cpp), rather than operator new:
+// hooks (src/core/device_profile.cpp), rather than operator new:
 //
 //   chromaroute_allocation_failure_tests lcms2-baseline <file>
 //       Writes how many lcms2 blocks a first use that succeeds at once leaves.
@@ -32,7 +32,8 @@
 #include <chromaroute/chromaroute.hpp>
 
 #if CHROMAROUTE_TEST_WITH_LCMS2
-#include "core/cmyk_profile.hpp"
+#include "core/device_profile.hpp"
+#include "support/lut_profiles.hpp"
 #include "support/naive_cmyk_profile.hpp"
 
 #include <fstream>
@@ -257,7 +258,7 @@ int concurrentFirstTouchTest()
 
 int lcmsBaselineTest(const char* file)
 {
-    chromaroute::detail::prepareCmykProfiles();
+    chromaroute::detail::prepareDeviceProfiles();
     const long live = chromaroute::detail::liveLcmsAllocations();
     std::ofstream out(file);
     out << live << '\n';
@@ -281,7 +282,7 @@ int lcmsFirstTouchTest(const char* file)
         failLcmsAllocation(n);
         bool threw = false;
         try {
-            prepareCmykProfiles();
+            prepareDeviceProfiles();
         } catch (const std::bad_alloc&) {
             threw = true;
         }
@@ -300,7 +301,7 @@ int lcmsFirstTouchTest(const char* file)
                 liveLcmsAllocations(), baseline);
     check(succeeded && injected >= 2, "the first use failed at every allocation, then succeeded");
     check(liveLcmsAllocations() == baseline, "the successful retry leaves what a first success leaves");
-    prepareCmykProfiles();
+    prepareDeviceProfiles();
     check(liveLcmsAllocations() == baseline, "once made, the first use allocates nothing again");
     const auto space =
         chromaroute::ColorSpace::fromIccProfile("after-retry", chromaroute::test::naiveCmykProfile(2, 3).bytes());
@@ -314,7 +315,7 @@ int lcmsProfileTest()
     using chromaroute::Converter;
     using chromaroute::PixelFormat;
     using namespace chromaroute::detail;
-    prepareCmykProfiles();
+    prepareDeviceProfiles();
 
     // Runs `attempt` with the n-th lcms2 allocation failing, for n = 1, 2, ...,
     // until it needs fewer; returns how many attempts failed.
@@ -353,6 +354,16 @@ int lcmsProfileTest()
     const auto first = chromaroute::test::naiveCmykProfile(2, 3).bytes();
     exercise("opening a CMYK profile", [&] { return ColorSpace::fromIccProfile("oom-first", first).has_value(); });
     check(ColorSpace::fromName("oom-first").has_value(), "the profile's space exists once, after the failures");
+
+    // RGB lookup-table profiles (A12), with tables both ways and input-only.
+    const auto lut = chromaroute::test::lutRgbProfile({2, 3}).bytes();
+    exercise("opening an RGB lookup-table profile", [&] { return ColorSpace::fromIccProfile("oom-lut", lut).has_value(); });
+    const auto input_only = chromaroute::test::lutRgbProfile({2, 3}, false).bytes();
+    exercise("opening an input-only profile",
+             [&] { return ColorSpace::fromIccProfile("oom-input-only", input_only).has_value(); });
+    check(ColorSpace::fromName("oom-lut")->hasLookupTableProfile() &&
+              ColorSpace::fromName("oom-input-only")->hasLookupTableProfile(),
+          "the lookup-table spaces exist after the failures");
 
     const auto second = ColorSpace::fromIccProfile("oom-second", chromaroute::test::naiveCmykProfile(2, 3, true).bytes());
     check(second.has_value(), "a second profile opens");

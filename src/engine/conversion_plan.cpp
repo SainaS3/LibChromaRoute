@@ -182,6 +182,26 @@ const SpaceDescriptor& scrgbSpace()
     return *scrgb;
 }
 
+// The profile a format's colors go through, if any: CMYK models in a CMYK
+// profile's space (A11), the encoded RGB or gray models (R'G'B', Y' and their
+// alpha forms) in an RGB or gray profile's space (A12). Every other format in
+// such a space is sRGB's.
+const DeviceProfile* profileOf(const FormatDescriptor& format) noexcept
+{
+    const DeviceProfile* profile = format.space->device_profile;
+    if (profile == nullptr) {
+        return nullptr;
+    }
+    const ModelDescriptor& m = *format.model;
+    const bool encoded = m.encoding == Encoding::space_trc;
+    switch (profileKind(*profile)) {
+        case DeviceKind::cmyk: return m.cmyk() ? profile : nullptr;
+        case DeviceKind::rgb: return encoded && m.family == ColorFamily::rgb ? profile : nullptr;
+        case DeviceKind::gray: return encoded && m.family == ColorFamily::gray ? profile : nullptr;
+    }
+    return nullptr;
+}
+
 // A model computed from R~G~B~ (S4) in a space. HCY's luma weights are the
 // space's luminance row normalized to sum to 1 (N12): unchanged in a space
 // derived from chromaticities, whose row sums to 1 by construction; divided by
@@ -280,14 +300,20 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
 {
     const ModelDescriptor& from = *source.model;
     const ModelDescriptor& to = *destination.model;
-    // CMYK ignores the format's space: its RGB side is linear scRGB (S5).
+    // CMYK ignores the format's space: its RGB side is linear scRGB (S5). So
+    // does a format whose device values go through an RGB or gray profile
+    // (A12): the profile gives linear scRGB, three colors even for gray.
+    const DeviceProfile* from_profile = profileOf(source);
+    const DeviceProfile* to_profile = profileOf(destination);
     const bool from_cmyk = from.cmyk();
     const bool to_cmyk = to.cmyk();
-    const SpaceDescriptor& from_space = from_cmyk ? scrgbSpace() : *source.space;
-    const SpaceDescriptor& to_space = to_cmyk ? scrgbSpace() : *destination.space;
-    const bool from_rgb = from.rgbLike() || from_cmyk; // RGB, Y'CbCr, HSL, HSV, HCY, CMYK
-    const bool to_rgb = to.rgbLike() || to_cmyk;
-    const bool to_gray = to.family == ColorFamily::gray;
+    const bool from_device = from_profile != nullptr && !from_cmyk;
+    const bool to_device = to_profile != nullptr && !to_cmyk;
+    const SpaceDescriptor& from_space = from_cmyk || from_device ? scrgbSpace() : *source.space;
+    const SpaceDescriptor& to_space = to_cmyk || to_device ? scrgbSpace() : *destination.space;
+    const bool from_rgb = from.rgbLike() || from_cmyk || from_device; // RGB, Y'CbCr, HSL, HSV, HCY, CMYK
+    const bool to_rgb = to.rgbLike() || to_cmyk || to_device;
+    const bool to_gray = to.family == ColorFamily::gray && !to_device;
     const bool from_cie = !from.rgbOrGray();
     const bool to_cie = !to.rgbOrGray();
 
@@ -319,10 +345,10 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // Between the spaces of two different profiles they go from one profile to
     // the other, as in babl (A11); with one profile or none they stay the same
     // inks.
-    const CmykProfile* from_profile = from_cmyk ? source.space->cmyk_profile : nullptr;
-    const CmykProfile* to_profile = to_cmyk ? destination.space->cmyk_profile : nullptr;
+    steps.source_channels = from_profile != nullptr ? deviceChannels(profileKind(*from_profile)) : 0;
+    steps.destination_channels = to_profile != nullptr ? deviceChannels(profileKind(*to_profile)) : 0;
     if (from_cmyk && to_cmyk) {
-        steps.hub = Hub::cmyk;
+        steps.hub = Hub::device;
         if (from_profile != nullptr && to_profile != nullptr && from_profile != to_profile) {
             steps.link = linkCmykProfiles(*from_profile, *to_profile);
             if (steps.link == nullptr) {
@@ -338,6 +364,18 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
         steps.source_ink = from.family == ColorFamily::cmyk;
         steps.destination_ink = to.family == ColorFamily::cmyk;
         return std::make_shared<const ConversionPlan>(source, destination, steps);
+    }
+    // One RGB or gray profile's device values on both sides (A12) are kept:
+    // within one model only the type changes; otherwise they are
+    // un-associated and associated, as inks are.
+    if (from_device && from_profile == to_profile) {
+        steps.hub = Hub::device;
+        steps.unassociate = from.associated() && &from != &to;
+        steps.associate = to.associated() && &from != &to;
+        return std::make_shared<const ConversionPlan>(source, destination, steps);
+    }
+    if (ConversionPlan::encodesIntoInputOnlyProfile(source, destination)) {
+        return nullptr;
     }
 
     // The hub between the models, and the linear steps between hubs (N7). In a
@@ -363,7 +401,7 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // spaces derived from chromaticities guarantee by construction. A space made
     // from a caller's matrix does not (N9): there gray goes through the matrices
     // like the RGB neutral it is, and RGB neutrals take no shortcut to CIE.
-    const bool from_gray = from.family == ColorFamily::gray;
+    const bool from_gray = from.family == ColorFamily::gray && !from_device;
     const bool same_matrix = from_space.rgb_to_xyz == to_space.rgb_to_xyz;
     const bool gray_as_rgb = from_gray && (from_space.from_matrix || (to_rgb && to_space.from_matrix));
     const bool rgb_source = from_rgb || gray_as_rgb;
@@ -422,7 +460,8 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // exception is a gamma TRC, which decodes values <= 0 to 0: a model change
     // keeps that clamp. Within one model and space only the type changes, and
     // values are kept. CIE models have no TRC.
-    bool same_trcs = true;
+    // A profile side has no TRC: the profile gives or takes linear scRGB.
+    bool same_trcs = !from_device && !to_device;
     const std::size_t to_rgb_colors = to_cmyk ? 3 : to.colorCount(); // CMYK: linear scRGB
     for (std::size_t c = 0; c < to_rgb_colors; ++c) {
         same_trcs = same_trcs && trcOf(from, from_space, from_rgb ? c : 0) == trcOf(to, to_space, c);
@@ -446,8 +485,8 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
         steps.clamp_encoded[c] = stay_encoded && !type_only && source_trc != nullptr &&
                                  source_trc->kind == TransferFunction::Kind::gamma;
         any_clamp = any_clamp || steps.clamp_encoded[c];
-        steps.decode[c] = stay_encoded ? nullptr : trcOf(from, from_space, c);
-        steps.encode[c] = stay_encoded ? nullptr : trcOf(to, to_space, c);
+        steps.decode[c] = stay_encoded || from_device ? nullptr : trcOf(from, from_space, c);
+        steps.encode[c] = stay_encoded || to_device ? nullptr : trcOf(to, to_space, c);
     }
     // Association (scaling colors by alpha) commutes with every step between
     // decode and encode, so two associated models in the same domain keep it.
@@ -455,9 +494,11 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     // finite alpha, dividing and multiplying again is the identity. A NaN or
     // infinite alpha turns colors into NaN, which a model change must keep
     // (a type-only conversion copies). CIE models have straight alpha only;
-    // CMYK's inks are not linear in RGB, so it always un-associates.
+    // CMYK's inks are not linear in RGB, so it always un-associates, as do a
+    // profile's device values.
     const bool any_trc = steps.decode[0] != nullptr || steps.encode[0] != nullptr || any_clamp;
-    const bool keep_association = from.associated() && to.associated() && !any_trc && !from_cmyk && !to_cmyk;
+    const bool keep_association = from.associated() && to.associated() && !any_trc && !from_cmyk && !to_cmyk &&
+                                  !from_device && !to_device;
     steps.unassociate = from.associated() && !keep_association;
     steps.associate = to.associated() && !keep_association;
     steps.nonfinite_alpha_to_nan = keep_association && !type_only;
@@ -469,15 +510,23 @@ std::shared_ptr<const ConversionPlan> build(const FormatDescriptor& source, cons
     steps.source_model = tildeModel(from, from_space, copied);
     steps.destination_model = tildeModel(to, to_space, copied);
     steps.source_cmyk = from_cmyk;
-    steps.source_ink = from.family == ColorFamily::cmyk;
+    steps.source_ink = from.family == ColorFamily::cmyk || from_device; // device values are never inverted
     steps.destination_cmyk = to_cmyk;
-    steps.destination_ink = to.family == ColorFamily::cmyk;
+    steps.destination_ink = to.family == ColorFamily::cmyk || to_device;
     steps.source_profile = from_profile;
     steps.destination_profile = to_profile;
     return std::make_shared<const ConversionPlan>(source, destination, steps);
 }
 
 } // namespace
+
+bool ConversionPlan::encodesIntoInputOnlyProfile(const FormatDescriptor& source,
+                                                 const FormatDescriptor& destination) noexcept
+{
+    const DeviceProfile* to_profile = profileOf(destination);
+    // Between two formats of one profile the device values are kept, not encoded.
+    return to_profile != nullptr && !profileEncodes(*to_profile) && profileOf(source) != to_profile;
+}
 
 ConversionPlan::ConversionPlan(const FormatDescriptor& source, const FormatDescriptor& destination,
                                const Steps& steps) noexcept
@@ -519,55 +568,58 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
     const std::size_t out_stride = to.component_count;
     const std::size_t in_colors = from.colorCount(); // alpha follows the colors
     const std::size_t out_colors = to.colorCount();
-    const std::size_t in_rgb = from.cmyk() ? 3 : in_colors; // colors on the RGB side
-    const std::size_t out_rgb = to.cmyk() ? 3 : out_colors;
+    // Colors on the RGB side: CMYK and a profile's device values give three.
+    const std::size_t in_rgb = from.cmyk() || steps_.source_profile != nullptr ? 3 : in_colors;
+    const std::size_t out_rgb = to.cmyk() || steps_.destination_profile != nullptr ? 3 : out_colors;
     const bool from_rgb_or_gray = from.rgbOrGray();
     const bool to_rgb_or_gray = to.rgbOrGray();
     const Vector3& w = steps_.weights;
     const Matrix3& m = steps_.matrix;
 
-    // CMYK through profiles (A11): lcms2 converts the chunk at once, so the
-    // source's inks are converted before the pixel loop, and the destination's
-    // linear scRGB is collected in it and converted after.
+    // Device values through profiles (A11, A12): lcms2 converts the chunk at
+    // once, so the source's are converted before the pixel loop, and the
+    // destination's linear scRGB is collected in it and converted after.
     double profile_rgb[chunk_pixels * 3];
-    double profile_inks[chunk_pixels * 4];
+    double profile_device[chunk_pixels * 4];
+    const std::size_t in_device = steps_.source_channels;
+    const std::size_t out_device = steps_.destination_channels;
     const auto alphaOf = [&](std::size_t p) { return from.hasAlpha() ? in[p * in_stride + in_colors] : 1.0; };
-    // A source pixel's inks, un-associated, in ink form (1 = full ink).
-    const auto gatherInks = [&](std::size_t p) {
+    // A source pixel's device values, un-associated; inks in ink form (1 = full ink).
+    const auto gatherDevice = [&](std::size_t p) {
         const double scale = steps_.unassociate ? usedAlpha(alphaOf(p)) : 1.0;
-        for (std::size_t k = 0; k < 4; ++k) {
+        for (std::size_t k = 0; k < in_device; ++k) {
             const double v = steps_.unassociate ? in[p * in_stride + k] / scale : in[p * in_stride + k];
-            profile_inks[p * 4 + k] = steps_.source_ink ? v : 1.0 - v;
+            profile_device[p * in_device + k] = steps_.source_ink ? v : 1.0 - v;
         }
     };
-    // Inks in ink form to a destination pixel: form, then association.
-    const auto storeInks = [&](std::size_t p) {
+    // Device values (inks in ink form) to a destination pixel: form, then association.
+    const auto storeDevice = [&](std::size_t p) {
         double* dst = out + p * out_stride;
         const double scale = steps_.associate ? usedAlpha(alphaOf(p)) : 1.0;
-        for (std::size_t k = 0; k < 4; ++k) {
-            const double ink = profile_inks[p * 4 + k];
-            const double v = steps_.destination_ink ? ink : 1.0 - ink;
+        for (std::size_t k = 0; k < out_device; ++k) {
+            const double value = profile_device[p * out_device + k];
+            const double v = steps_.destination_ink ? value : 1.0 - value;
             dst[k] = steps_.associate ? v * scale : v;
         }
         if (to.hasAlpha()) {
-            dst[4] = alphaOf(p);
+            dst[out_colors] = alphaOf(p);
         }
     };
-    if (steps_.link != nullptr) { // between two profiles' spaces
+    if (steps_.link != nullptr) { // between two CMYK profiles' spaces
         for (std::size_t p = 0; p < pixels; ++p) {
-            gatherInks(p);
+            gatherDevice(p);
         }
-        cmykToCmyk(*steps_.link, profile_inks, profile_inks, pixels);
+        cmykToCmyk(*steps_.link, profile_device, profile_device, pixels);
         for (std::size_t p = 0; p < pixels; ++p) {
-            storeInks(p);
+            storeDevice(p);
         }
         return;
     }
-    if (steps_.source_profile != nullptr) {
+    if (steps_.source_profile != nullptr && steps_.hub != Hub::device) {
         for (std::size_t p = 0; p < pixels; ++p) {
-            gatherInks(p);
+            gatherDevice(p);
         }
-        cmykToScrgb(*steps_.source_profile, profile_inks, profile_rgb, pixels);
+        deviceToScrgb(*steps_.source_profile, profile_device, profile_rgb, pixels);
     }
 
     for (std::size_t p = 0; p < pixels; ++p) {
@@ -575,11 +627,12 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         double* dst = out + p * out_stride;
         const double alpha = from.hasAlpha() ? src[in_colors] : 1.0;
 
-        // CMYK to CMYK: un-associate, change form, associate (S5).
-        if (steps_.hub == Hub::cmyk) {
+        // CMYK to CMYK, or one profile's device values on both sides:
+        // un-associate, change form, associate (S5, A12).
+        if (steps_.hub == Hub::device) {
             const double source_scale = steps_.unassociate ? usedAlpha(alpha) : 1.0;
             const double destination_scale = steps_.associate ? usedAlpha(alpha) : 1.0;
-            for (std::size_t k = 0; k < 4; ++k) {
+            for (std::size_t k = 0; k < in_colors; ++k) {
                 double ink = steps_.unassociate ? src[k] / source_scale : src[k];
                 if (steps_.invert_cmyk) {
                     ink = 1.0 - ink;
@@ -587,7 +640,7 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
                 dst[k] = steps_.associate ? ink * destination_scale : ink;
             }
             if (to.hasAlpha()) {
-                dst[4] = alpha;
+                dst[out_colors] = alpha;
             }
             continue;
         }
@@ -633,9 +686,9 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
             // To a CIE model a neutral needs no matrix where R = G = B is the D50
             // white (spaces derived from chromaticities, N9): it is (v, v, v) in
             // normalized XYZ. That holds for gray (N7) and for RGB with equal
-            // decoded channels (N8).
-            neutral = steps_.neutral_to_cie && (in_colors == 1 || (c[0] == c[1] && c[1] == c[2]));
-            if (in_colors == 1) {
+            // decoded channels (N8). A gray profile's colors come as three.
+            neutral = steps_.neutral_to_cie && (in_rgb == 1 || (c[0] == c[1] && c[1] == c[2]));
+            if (in_rgb == 1) {
                 c[1] = c[2] = c[0]; // gray is R = G = B
             }
             if (neutral && steps_.hub == Hub::xyz) {
@@ -647,7 +700,7 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
 
         // Between the hubs: model and space changes in linear light.
         Vector3 v{};
-        if (out_colors == 1) {
+        if (out_rgb == 1) { // to gray, unless a gray profile takes three colors
             v[0] = steps_.luminance ? (w[0] * c[0] + w[1] * c[1] + w[2] * c[2]) : (steps_.take_y ? c[1] : c[0]);
             if (steps_.divide_luminance) {
                 v[0] /= steps_.luminance_divisor;
@@ -681,7 +734,8 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
                     dst[k] = steps_.associate ? ink * destination_scale : ink;
                 }
             }
-            for (std::size_t i = 0; i < out_rgb && !steps_.destination_cmyk; ++i) {
+            const bool encoded_here = !steps_.destination_cmyk && steps_.destination_profile == nullptr;
+            for (std::size_t i = 0; i < out_rgb && encoded_here; ++i) {
                 dst[i] = v[i];
                 if (steps_.encode[i] != nullptr) {
                     dst[i] = fromLinear(*steps_.encode[i], dst[i]);
@@ -711,9 +765,9 @@ void ConversionPlan::convertModels(const double* in, double* out, std::size_t pi
         }
     }
     if (steps_.destination_profile != nullptr) {
-        scrgbToCmyk(*steps_.destination_profile, profile_rgb, profile_inks, pixels);
+        scrgbToDevice(*steps_.destination_profile, profile_rgb, profile_device, pixels);
         for (std::size_t p = 0; p < pixels; ++p) {
-            storeInks(p);
+            storeDevice(p);
         }
     }
 }

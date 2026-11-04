@@ -121,18 +121,32 @@ public:
     // its colorants (rXYZ, gXYZ, bXYZ) as the matrix, its white point (wtpt)
     // and its tone curves (rTRC, gTRC, bTRC); a gray profile gives sRGB's
     // primaries with its gray curve (kTRC) on every channel. Lookup tables in a
-    // profile that also has a matrix are ignored. In a build with lcms2
-    // (CHROMAROUTE_WITH_LCMS2), a CMYK profile gives a space in which CMYK
-    // formats convert through the profile to and from linear sRGB, with
-    // relative colorimetric intent and black point compensation; RGB and gray
-    // formats in it are sRGB, and hasCmykProfile() is true. CMYK profiles are
-    // interned by their bytes. Errors: invalid_profile for malformed bytes,
-    // unsupported_profile for other profiles (lookup tables only, CMYK without
-    // lcms2, Lab connection space without CMYK). Checking stops at the first
-    // problem, so an unsupported profile is not necessarily valid otherwise.
+    // profile that also has a matrix/TRC form are ignored.
+    //
+    // In a build with lcms2 (CHROMAROUTE_WITH_LCMS2), profiles built on lookup
+    // tables give spaces whose formats convert through the profile to and from
+    // linear sRGB, with relative colorimetric intent and black point
+    // compensation; every other format in them is sRGB's, and
+    // hasLookupTableProfile() is true. For a CMYK profile those are the CMYK
+    // formats (hasCmykProfile() is true too). For an RGB or gray profile
+    // without a matrix/TRC form (lookup tables only, an RGB output or color
+    // space profile, a gray color space profile, a Lab connection space) they
+    // are the encoded formats: R'G'B', R'G'B'A and R'aG'aB'aA, or Y', Y'A and
+    // Y'aA. Such an RGB or gray profile may be input-only (no table out of the
+    // connection space): conversions from its formats work, and Converter::create
+    // gives unsupported_profile for a conversion that needs the profile's
+    // encoding transform. Conversions between two of the profile's own formats
+    // keep the device values (only the type and association change), so they
+    // work. These profiles are interned by their bytes.
+    //
+    // Errors: invalid_profile for malformed bytes, unsupported_profile for
+    // other profiles (lookup tables without lcms2, Lab connection space
+    // without lcms2, a profile with no table into the connection space).
+    // Checking stops at the first problem, so an unsupported profile is not
+    // necessarily valid otherwise.
     static Result<ColorSpace> fromIccProfile(std::string_view name, std::span<const std::byte> profile);
 
-    // The same primaries with another TRC on every channel; for a CMYK
+    // The same primaries with another TRC on every channel; for a lookup-table
     // profile's space with a TRC other than sRGB's, a space without the profile.
     // Both inputs are valid handles, so this cannot fail (it may throw
     // std::bad_alloc, like any creation).
@@ -140,6 +154,10 @@ public:
 
     // Whether the space comes from a CMYK ICC profile (fromIccProfile).
     [[nodiscard]] bool hasCmykProfile() const noexcept;
+    // Whether the space comes from an ICC profile read through its lookup
+    // tables (fromIccProfile): a CMYK profile, or an RGB or gray one without a
+    // matrix/TRC form.
+    [[nodiscard]] bool hasLookupTableProfile() const noexcept;
 
     [[nodiscard]] std::string_view name() const noexcept;
     [[nodiscard]] Chromaticities chromaticities() const noexcept;

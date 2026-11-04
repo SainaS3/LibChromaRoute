@@ -1,6 +1,6 @@
 #include "core/descriptors.hpp"
 
-#include "core/cmyk_profile.hpp"
+#include "core/device_profile.hpp"
 #include "engine/color_math.hpp"
 
 #include <algorithm>
@@ -314,7 +314,7 @@ struct Registry {
     std::shared_mutex mutex;
     std::deque<TrcDescriptor> trcs;
     std::deque<SpaceDescriptor> spaces;
-    std::deque<CmykProfilePtr> cmyk_profiles; // owned here, referenced by their spaces
+    std::deque<DeviceProfilePtr> profiles; // owned here, referenced by their spaces
     std::vector<std::string> base_names; // reserved up front: never reallocates
     std::vector<FormatDescriptor> base_formats;
     std::unordered_map<std::string_view, const FormatDescriptor*> base_by_name;
@@ -386,7 +386,7 @@ struct Registry {
                                      const std::array<const TrcDescriptor*, 3>& trc)
     {
         for (const SpaceDescriptor& s : spaces) {
-            if (!s.from_matrix && s.cmyk_profile == nullptr && same(s.chromaticities, c) && s.trc == trc) {
+            if (!s.from_matrix && s.device_profile == nullptr && same(s.chromaticities, c) && s.trc == trc) {
                 return s; // interned by parameters; the name is ignored
             }
         }
@@ -421,20 +421,21 @@ struct Registry {
         return spaces.emplace_back(SpaceDescriptor{std::move(stored_name), c, white, m, inverse(m), trc, true});
     }
 
-    // A CMYK profile's space: sRGB's parameters, as in babl, and the profile.
-    // Interned by the profile's bytes. The profile is opened under the lock,
-    // so two threads never open the same one twice.
-    Result<const SpaceDescriptor*> addCmykSpace(std::string_view name, std::span<const std::byte> bytes)
+    // A lookup-table profile's space: sRGB's parameters, as in babl for CMYK,
+    // and the profile (A11, A12). Interned by the profile's bytes. The profile
+    // is opened under the lock, so two threads never open the same one twice.
+    Result<const SpaceDescriptor*> addProfileSpace(std::string_view name, std::span<const std::byte> bytes,
+                                                   DeviceKind kind)
     {
         for (const SpaceDescriptor& s : spaces) {
-            if (s.cmyk_profile != nullptr) {
-                const auto known = profileBytes(*s.cmyk_profile);
+            if (s.device_profile != nullptr) {
+                const auto known = profileBytes(*s.device_profile);
                 if (std::equal(known.begin(), known.end(), bytes.begin(), bytes.end())) {
                     return &s;
                 }
             }
         }
-        auto opened = openCmykProfile(bytes);
+        auto opened = openDeviceProfile(bytes, kind);
         if (!opened) {
             return opened.error();
         }
@@ -444,20 +445,21 @@ struct Registry {
             for (std::byte b : bytes) {
                 hash = (hash ^ std::to_integer<std::uint64_t>(b)) * 0x100000001b3u;
             }
+            const char* prefix = kind == DeviceKind::cmyk ? "cmyk" : kind == DeviceKind::rgb ? "rgb" : "gray";
             char buffer[32];
-            std::snprintf(buffer, sizeof buffer, "cmyk-%016llx", static_cast<unsigned long long>(hash));
+            std::snprintf(buffer, sizeof buffer, "%s-%016llx", prefix, static_cast<unsigned long long>(hash));
             stored_name = buffer;
         } else {
             stored_name = spaceName(name);
         }
         // If publishing the space throws (std::bad_alloc), the profile goes too.
-        const CmykProfile& profile = *cmyk_profiles.emplace_back(std::move(*opened));
+        const DeviceProfile& profile = *profiles.emplace_back(std::move(*opened));
         try {
             const SpaceDescriptor& s = *srgb_space;
             return &spaces.emplace_back(SpaceDescriptor{std::move(stored_name), s.chromaticities, s.white_xyz,
                                                         s.rgb_to_xyz, s.xyz_to_rgb, s.trc, false, &profile});
         } catch (...) {
-            cmyk_profiles.pop_back();
+            profiles.pop_back();
             throw;
         }
     }
@@ -725,11 +727,12 @@ const SpaceDescriptor& spaceWithTrc(const SpaceDescriptor& space, const TrcDescr
     return spaceFromChromaticities("", space.chromaticities, all);
 }
 
-Result<const SpaceDescriptor*> cmykProfileSpace(std::string_view name, std::span<const std::byte> profile)
+Result<const SpaceDescriptor*> deviceProfileSpace(std::string_view name, std::span<const std::byte> profile,
+                                                  DeviceKind kind)
 {
     Registry& r = registry();
     const std::unique_lock lock(r.mutex);
-    return r.addCmykSpace(name, profile);
+    return r.addProfileSpace(name, profile, kind);
 }
 
 } // namespace chromaroute::detail

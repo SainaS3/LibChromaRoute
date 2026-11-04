@@ -300,8 +300,8 @@ Result<ColorSpace> ColorSpace::fromIccProfile(std::string_view name, std::span<c
     if (!parsed) {
         return parsed.error();
     }
-    if (parsed->cmyk) { // lcms2 reads the rest, before the space is created
-        const auto space = detail::cmykProfileSpace(name, profile.first(parsed->size));
+    if (parsed->lookup) { // lcms2 reads the rest, before the space is created
+        const auto space = detail::deviceProfileSpace(name, profile.first(parsed->size), parsed->kind);
         if (!space) {
             return space.error();
         }
@@ -348,7 +348,13 @@ ColorSpace ColorSpace::withTransfer(TransferFunction trc) const
 
 bool ColorSpace::hasCmykProfile() const noexcept
 {
-    return descriptor_->cmyk_profile != nullptr;
+    return descriptor_->device_profile != nullptr &&
+           detail::profileKind(*descriptor_->device_profile) == detail::DeviceKind::cmyk;
+}
+
+bool ColorSpace::hasLookupTableProfile() const noexcept
+{
+    return descriptor_->device_profile != nullptr;
 }
 
 std::string_view ColorSpace::name() const noexcept

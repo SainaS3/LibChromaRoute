@@ -29,6 +29,12 @@ Converter::Converter(std::shared_ptr<const detail::ConversionPlan> plan) noexcep
 
 Result<Converter> Converter::create(PixelFormat source, PixelFormat destination)
 {
+    if (detail::ConversionPlan::encodesIntoInputOnlyProfile(source.descriptor(), destination.descriptor())) {
+        return Error{ErrorCode::unsupported_profile,
+                     "unsupported ICC profile: the profile of \"" + std::string(destination.space().name()) +
+                         "\" has no table out of the connection space, so nothing converts into \"" +
+                         std::string(destination.name()) + "\""};
+    }
     std::shared_ptr<const detail::ConversionPlan> plan =
         detail::ConversionPlan::get(source.descriptor(), destination.descriptor());
     if (!plan) {

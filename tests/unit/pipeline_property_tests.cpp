@@ -5,6 +5,7 @@
 // checked against the oracles elsewhere.
 
 #include "support/icc_writer.hpp"
+#include "support/lut_profiles.hpp"
 #include "support/naive_cmyk_profile.hpp"
 #include "support/test_harness.hpp"
 
@@ -173,6 +174,32 @@ CR_TEST(direct_equals_staged_with_cmyk_profile_spaces)
         CR_CHECK(stagedMismatches(a, "", cr_context.out()) == 0);
         CR_CHECK(stagedMismatches("", a, cr_context.out()) == 0);
         CR_CHECK(stagedMismatches(a, b, cr_context.out()) == 0);
+    }
+}
+
+CR_TEST(direct_equals_staged_with_lookup_table_profile_spaces)
+{
+    // RGB and gray lookup-table profiles' spaces (decision A12): from one to
+    // sRGB, from sRGB to it, between two RGB profiles, and between a gray
+    // profile and an RGB one; their encoded formats convert through the
+    // profiles, every other format is sRGB's.
+    chromaroute::test::LutRgbOptions swapped;
+    swapped.swap = true;
+    const auto rgb = chromaroute::ColorSpace::fromIccProfile("pipeline-lut", chromaroute::test::lutRgbProfile().bytes());
+    const auto other =
+        chromaroute::ColorSpace::fromIccProfile("pipeline-lut-swapped", chromaroute::test::lutRgbProfile(swapped).bytes());
+    const auto gray =
+        chromaroute::ColorSpace::fromIccProfile("pipeline-lut-gray", chromaroute::test::lutGrayProfile().bytes());
+    CR_CHECK(rgb.has_value() && other.has_value() && gray.has_value());
+    if (rgb && other && gray) {
+        const std::string a = "-" + std::string(rgb->name());
+        const std::string b = "-" + std::string(other->name());
+        const std::string g = "-" + std::string(gray->name());
+        CR_CHECK(stagedMismatches(a, "", cr_context.out()) == 0);
+        CR_CHECK(stagedMismatches("", a, cr_context.out()) == 0);
+        CR_CHECK(stagedMismatches(a, b, cr_context.out()) == 0);
+        CR_CHECK(stagedMismatches(g, a, cr_context.out()) == 0);
+        CR_CHECK(stagedMismatches(a, g, cr_context.out()) == 0);
     }
 }
 #endif

@@ -1,6 +1,6 @@
 #include "core/icc_profile.hpp"
 
-#include "core/cmyk_profile.hpp"
+#include "core/device_profile.hpp"
 
 #include <optional>
 #include <string>
@@ -122,15 +122,33 @@ public:
         return nullptr;
     }
 
+    // Any 16-bit or float lookup table, in either direction.
     [[nodiscard]] bool hasLookupTables() const noexcept
     {
         for (std::uint32_t sig : {signature("A2B0"), signature("A2B1"), signature("A2B2"), signature("B2A0"),
-                                  signature("B2A1"), signature("B2A2")}) {
+                                  signature("B2A1"), signature("B2A2"), signature("D2B0"), signature("D2B1"),
+                                  signature("D2B2"), signature("B2D0"), signature("B2D1"), signature("B2D2")}) {
             if (find(sig) != nullptr) {
                 return true;
             }
         }
         return false;
+    }
+
+    // Whether every tag of the matrix/TRC form is there (they may still be
+    // malformed): kTRC for gray; the colorants, white point and curves for RGB.
+    [[nodiscard]] bool hasMatrixTags(bool gray) const noexcept
+    {
+        if (gray) {
+            return find(signature("kTRC")) != nullptr;
+        }
+        for (std::uint32_t sig : {signature("rXYZ"), signature("gXYZ"), signature("bXYZ"), signature("wtpt"),
+                                  signature("rTRC"), signature("gTRC"), signature("bTRC")}) {
+            if (find(sig) == nullptr) {
+                return false;
+            }
+        }
+        return true;
     }
 
     Result<Vector3> xyz(std::uint32_t sig) const
@@ -246,24 +264,33 @@ Result<IccMatrixProfile> readIccMatrixProfile(std::span<const std::byte> profile
         return malformed("unknown color space " + text(color_space));
     }
     const bool gray = color_space == signature("GRAY");
-    // CMYK profiles are built on lookup tables, which lcms2 reads (decision
-    // A11); ICC.1 defines them for the four classes left at this point.
-    const bool cmyk = color_space == signature("CMYK") && cmykProfilesAvailable();
+    // Profiles built on lookup tables are read by lcms2 (decisions A11, A12):
+    // CMYK ones always, which ICC.1 defines for the four classes left at this
+    // point; RGB and gray ones when they have no matrix/TRC form, below.
+    const bool lookup_available = deviceProfilesAvailable();
+    const bool cmyk = color_space == signature("CMYK") && lookup_available;
     if (!gray && !cmyk && color_space != signature("RGB ")) {
         return unsupported("color space " + text(color_space) + " (RGB and GRAY are supported" +
-                           (cmykProfilesAvailable() ? ", and CMYK)" : "; CMYK needs a build with lcms2)"));
+                           (lookup_available ? ", and CMYK)" : "; CMYK needs a build with lcms2)"));
     }
     // ICC.1 defines three-component matrix/TRC profiles for the input and
     // display classes, and monochrome ones for the output class too; the other
-    // classes are built on lookup tables.
-    const bool matrix_class = device_class == signature("scnr") || device_class == signature("mntr");
-    if (!cmyk && !matrix_class && !(gray && device_class == signature("prtr"))) {
-        return unsupported((gray ? "GRAY" : "RGB") + std::string(" profile of class ") + text(device_class) +
-                           " (matrix/TRC data is defined for input and display profiles, and gray also for output)");
+    // classes are built on lookup tables. Without lcms2 such profiles stop here.
+    const bool matrix_class = device_class == signature("scnr") || device_class == signature("mntr") ||
+                              (gray && device_class == signature("prtr"));
+    // With lcms2 these reasons are given only for profiles without lookup tables.
+    const char* const tables = lookup_available ? "; it has no lookup tables" : "; lookup tables need a build with lcms2";
+    const std::string class_reason = (gray ? "GRAY" : "RGB") + std::string(" profile of class ") +
+                                     text(device_class) +
+                                     " (matrix/TRC data is defined for input and display profiles, and gray also for "
+                                     "output" + tables + ")";
+    const std::string lab_reason = "Lab connection space (matrix/TRC profiles use XYZ" + std::string(tables) + ")";
+    if (!cmyk && !matrix_class && !lookup_available) {
+        return unsupported(class_reason);
     }
     const std::uint32_t pcs = bytes.u32(20);
-    if (pcs == signature("Lab ") && !cmyk) {
-        return unsupported("Lab connection space (matrix/TRC profiles use XYZ)");
+    if (pcs == signature("Lab ") && !cmyk && !lookup_available) {
+        return unsupported(lab_reason);
     }
     if (pcs != signature("XYZ ") && pcs != signature("Lab ")) {
         return malformed("connection space " + text(pcs));
@@ -284,12 +311,31 @@ Result<IccMatrixProfile> readIccMatrixProfile(std::span<const std::byte> profile
         tags.push_back(tag);
     }
     IccMatrixProfile result;
+    result.size = declared;
     if (cmyk) {
-        result.cmyk = true;
-        result.size = declared;
+        result.lookup = true;
+        result.kind = DeviceKind::cmyk;
         return result;
     }
     const Profile p(bytes, std::move(tags));
+    // In a build with lcms2, an RGB or gray profile without a complete
+    // matrix/TRC form goes to lcms2 if it has lookup tables (A12); a profile
+    // with both keeps its matrix/TRC reading, as babl does in its speed mode
+    // (in its accuracy mode babl rejects one with both A2B0 and B2A0).
+    if (lookup_available && !(matrix_class && pcs == signature("XYZ ") && p.hasMatrixTags(gray))) {
+        if (p.hasLookupTables()) {
+            result.lookup = true;
+            result.kind = gray ? DeviceKind::gray : DeviceKind::rgb;
+            return result;
+        }
+        if (!matrix_class) {
+            return unsupported(class_reason);
+        }
+        if (pcs == signature("Lab ")) {
+            return unsupported(lab_reason);
+        }
+        // Otherwise a matrix/TRC tag is missing, reported below.
+    }
 
     result.gray = gray;
     if (gray) {

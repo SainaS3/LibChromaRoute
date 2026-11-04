@@ -203,7 +203,13 @@ CR_TEST(icc_profiles_with_problems_are_rejected)
         {"CMYK", IccWriter(4, "CMYK").bytes(), ErrorCode::unsupported_profile},
         {"Lab connection space", IccWriter(4, "RGB ", "Lab ").bytes(), ErrorCode::unsupported_profile},
         {"unknown connection space", IccWriter(4, "RGB ", "abcd").bytes(), ErrorCode::invalid_profile},
-        {"lookup tables only", IccWriter().raw("A2B0", std::vector<std::byte>(32)).bytes(), ErrorCode::unsupported_profile},
+        // With lcms2 the profile goes to it (A12), which cannot read the table.
+        {"lookup tables only", IccWriter().raw("A2B0", std::vector<std::byte>(32)).bytes(),
+#if CHROMAROUTE_TEST_WITH_LCMS2
+         ErrorCode::invalid_profile},
+#else
+         ErrorCode::unsupported_profile},
+#endif
         {"no tags", IccWriter().bytes(), ErrorCode::invalid_profile},
         {"no white point",
          IccWriter().xyz("rXYZ", 0.4, 0.2, 0.0).xyz("gXYZ", 0.4, 0.7, 0.1).xyz("bXYZ", 0.1, 0.1, 0.7)

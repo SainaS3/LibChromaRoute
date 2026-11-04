@@ -1,10 +1,14 @@
 #pragma once
 
 // The matrix/TRC parts of ICC profiles (ICC.1, versions 2 and 4), read with
-// every offset and length checked against the profile's bytes.
+// every offset and length checked against the profile's bytes; for profiles
+// built on lookup tables, only the header and tag table, before lcms2 reads
+// the rest (core/device_profile.hpp).
 
 #include <chromaroute/color_space.hpp>
 #include <chromaroute/result.hpp>
+
+#include "core/device_profile.hpp"
 
 #include <array>
 #include <cstddef>
@@ -33,15 +37,17 @@ struct IccMatrixProfile {
     Matrix3 rgb_to_xyz{};        // RGB: the colorants rXYZ, gXYZ, bXYZ as columns
     Vector3 white{};             // RGB: the media white point (wtpt)
     std::array<IccCurve, 3> trc; // RGB: rTRC, gTRC, bTRC; gray: kTRC first
-    // A CMYK profile, in a build that reads them (core/cmyk_profile.hpp):
-    // only its header and tag table are checked here, lcms2 reads the rest.
-    bool cmyk = false;
-    std::size_t size = 0; // the declared size: the bytes that belong to the profile
+    // A profile for lcms2, in a build with it: CMYK (A11), or RGB or gray
+    // without a matrix/TRC form but with lookup tables (A12). Only its header
+    // and tag table are checked here; lcms2 reads the rest.
+    bool lookup = false;
+    DeviceKind kind = DeviceKind::rgb; // the lookup profile's data color space
+    std::size_t size = 0;              // the declared size: the bytes that belong to the profile
 };
 
 // invalid_profile for malformed bytes; unsupported_profile for valid profiles
-// without RGB or gray matrix/TRC data, other than CMYK profiles in a build
-// that reads them.
+// without RGB or gray matrix/TRC data, other than lookup-table profiles in a
+// build that reads them.
 [[nodiscard]] Result<IccMatrixProfile> readIccMatrixProfile(std::span<const std::byte> profile);
 
 } // namespace chromaroute::detail

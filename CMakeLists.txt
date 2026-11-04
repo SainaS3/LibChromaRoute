@@ -9,10 +9,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(chromaroute_compiler_options)
 
 option(CHROMAROUTE_BUILD_TESTS "Build LibChromaRoute tests" ${PROJECT_IS_TOP_LEVEL})
-# Off by default: without it the core has no dependency, and CMYK profiles
+# Off by default: without it the core has no dependency, and lookup-table profiles
 # return an unsupported-profile error (decision P5). On, the first configure
 # downloads the pinned lcms2 release.
-option(CHROMAROUTE_WITH_LCMS2 "Read CMYK ICC profiles through Little CMS 2 (fetched, pinned)" OFF)
+option(CHROMAROUTE_WITH_LCMS2 "Read lookup-table ICC profiles (CMYK, and RGB and gray without matrix/TRC) through Little CMS 2 (fetched, pinned)" OFF)
 
 # ---------------------------------------------------------------------------
 # Core library (portable C++20; no platform UI or graphics dependencies)
@@ -20,7 +20,7 @@ option(CHROMAROUTE_WITH_LCMS2 "Read CMYK ICC profiles through Little CMS 2 (fetc
 add_library(chromaroute STATIC
   src/color_space.cpp
   src/converter.cpp
-  src/core/cmyk_profile.cpp
+  src/core/device_profile.cpp
   src/core/icc_profile.cpp
   src/core/registry.cpp
   src/engine/conversion_plan.cpp

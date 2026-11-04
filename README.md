@@ -24,9 +24,12 @@ A C++20 static library for converting pixels between formats and color spaces.
   or an RGB or gray matrix/TRC ICC profile (versions 2 and 4). TRCs: linear, sRGB,
   gamma, ICC parametric curves and sampled tables. A format in another space is
   named `"R'G'B'A u8-DisplayP3"`.
-- **CMYK ICC profiles,** with the optional lcms2 back end (`CHROMAROUTE_WITH_LCMS2`,
-  off by default): a profile gives a space whose CMYK formats convert through it,
-  relative colorimetric with black point compensation, as in babl.
+- **ICC profiles built on lookup tables,** with the optional lcms2 back end
+  (`CHROMAROUTE_WITH_LCMS2`, off by default), relative colorimetric with black
+  point compensation: a CMYK profile gives a space whose CMYK formats convert
+  through it, as in babl; an RGB or gray profile without a matrix/TRC form gives
+  a space whose R'G'B' or Y' formats convert through it (beyond babl). For an
+  input-only profile, conversions that need its encoding transform fail.
 - **API:** `PixelFormat`, `ColorSpace`, `TransferFunction`, `Converter`. Every pair of
   formats converts.
 - **Verified** against independent high-precision oracles, on the desktop and inside
@@ -44,9 +47,11 @@ chromaroute::Status status = converter->process(std::as_bytes(std::span(pixels))
 
 ## Not supported
 
-- RGB and gray ICC profiles built on lookup tables (planned for M8c), and CMYK
-  profiles in a build without lcms2. Rendering intents other than relative
-  colorimetric, black point compensation outside CMYK profiles, and gamut mapping.
+- ICC profiles built on lookup tables (CMYK, and RGB and gray without a
+  matrix/TRC form) in a build without lcms2. Rendering intents other than relative
+  colorimetric, black point compensation outside lookup-table profiles (and inside
+  those where lcms2 detects no black point, such as RGB profiles with A2B0 alone),
+  and gamut mapping.
   Integer outputs clamp each channel on its own.
 - Absolute luminance and HDR transfer functions (PQ, HLG). The built-in Rec2020 uses
   the sRGB curve and ProPhoto a pure 1.8 power, as in babl, not BT.2020's OETF or
